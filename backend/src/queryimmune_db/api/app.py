@@ -213,7 +213,8 @@ def execute_natural_language_request(
 @app.get("/api/v1/dashboard", response_model=DashboardResponse, tags=["audit"])
 def dashboard(actor: Actor = Depends(get_current_actor)) -> DashboardResponse:
     try:
-        data = HealthcareRepository().dashboard(uuid.UUID(actor.user_id))
+        actor_id = uuid.UUID(actor.user_id)
+        data = HealthcareRepository().dashboard(actor_id, actor_context_id=actor_id)
     except (psycopg.Error, RuntimeError):
         # Do not expose connection details or audit contents in database failures.
         raise HTTPException(status_code=503, detail="Dashboard data is unavailable") from None

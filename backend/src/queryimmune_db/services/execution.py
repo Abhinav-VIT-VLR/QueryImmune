@@ -62,7 +62,13 @@ class ExecutionService:
 
         started = time.monotonic()
         try:
-            rows = self.repository.execute_action(request.action, UUID(actor.user_id), request.limit, request.from_date)
+            rows = self.repository.execute_action(
+                request.action,
+                UUID(actor.user_id),
+                request.limit,
+                request.from_date,
+                actor_context_id=UUID(actor.user_id),
+            )
         except (psycopg.Error, RuntimeError, ValueError):
             duration_ms = max(0, int((time.monotonic() - started) * 1000))
             try:
@@ -79,7 +85,12 @@ class ExecutionService:
             raise HTTPException(status_code=503, detail="Execution audit could not be completed") from None
         if self.profile_updater is not None:
             try:
-                self.profile_updater.observe_success(actor.user_id, decision.feature_snapshot, len(rows))
+                self.profile_updater.observe_success(
+                    actor.user_id,
+                    decision.feature_snapshot,
+                    len(rows),
+                    actor_context_id=actor.user_id,
+                )
             except (psycopg.Error, RuntimeError, ValueError):
                 # Profile maintenance is isolated from successful query execution and remains fail closed.
                 logger.warning("behavior profile update deferred", extra={"request_id": str(request_id), "error_type": "profile_update"})

@@ -69,7 +69,7 @@ def test_allowed_action_executes_and_audit_is_created(seeded_doctor):
     assert isinstance(result["results"], list)
     assert response.headers["x-request-id"] == result["request_id"]
 
-    with transaction(read_only=True) as conn:
+    with transaction(read_only=True, actor_context_id=UUID(seeded_doctor.user_id)) as conn:
         log = conn.execute(
             "SELECT decision, execution_status, row_count FROM security.query_logs WHERE request_id = %s",
             (UUID(result["request_id"]),),
@@ -89,7 +89,7 @@ def test_blocked_request_is_audited_and_never_executes(seeded_doctor):
     body = response.json()
     assert body["decision"] == "block"
     assert body["execution_status"] == "not_run"
-    with transaction(read_only=True) as conn:
+    with transaction(read_only=True, actor_context_id=UUID(seeded_doctor.user_id)) as conn:
         log = conn.execute("SELECT decision, execution_status FROM security.query_logs WHERE request_id = %s", (UUID(body["request_id"]),)).fetchone()
         risk = conn.execute("SELECT outcome FROM security.risk_events WHERE request_id = %s", (UUID(body["request_id"]),)).fetchone()
     assert log == ("block", "not_run")
@@ -198,6 +198,134 @@ def test_seeded_role_resource_policies_fail_closed(seeded_doctor):
         app.dependency_overrides.pop(get_current_actor, None)
 
 
+@pytest.mark.database
+def test_appointment_rows_are_isolated_by_database_actor_context(seeded_doctor):
+    from queryimmune_db.connection import transaction
+
+    repository = HealthcareRepository()
+    actor_a = seeded_doctor
+    actor_b = repository.actor_by_subject("demo:dr-grace")
+    assert actor_b is not None
+    actor_a_id = UUID(actor_a.user_id)
+    actor_b_id = UUID(actor_b.user_id)
+
+    with transaction(read_only=True, actor_context_id=actor_a_id) as conn:
+        own_doctors = conn.execute("SELECT user_id FROM healthcare.doctors").fetchall()
+        other_doctors = conn.execute(
+            "SELECT id FROM healthcare.doctors WHERE user_id = %s", (actor_b_id,)
+        ).fetchall()
+        own_patients = conn.execute(
+            """SELECT DISTINCT p.synthetic_patient_number
+               FROM healthcare.appointments a
+               JOIN healthcare.patients p ON p.id = a.patient_id
+               JOIN healthcare.doctors d ON d.id = a.doctor_id
+               WHERE d.user_id = %s""",
+            (actor_a_id,),
+        ).fetchall()
+    assert own_doctors == [(actor_a_id,)]
+    assert other_doctors == []
+    assert own_patients
+
+    with transaction(read_only=True, actor_context_id=actor_b_id) as conn:
+        actor_b_patients = conn.execute(
+            """SELECT DISTINCT p.synthetic_patient_number
+               FROM healthcare.appointments a
+               JOIN healthcare.patients p ON p.id = a.patient_id
+               JOIN healthcare.doctors d ON d.id = a.doctor_id
+               WHERE d.user_id = %s""",
+            (actor_b_id,),
+        ).fetchall()
+    assert actor_b_patients
+    assert {row[0] for row in own_patients}.isdisjoint({row[0] for row in actor_b_patients})
+
+    # A wrong query predicate cannot escape the independently established actor context.
+    wrong_actor_rows = repository.execute_action(
+        "appointments.mine", actor_b_id, 25, None, actor_context_id=actor_a_id
+    )
+    assert wrong_actor_rows == []
+
+
+@pytest.mark.database
+def test_api_actor_change_changes_visible_appointments(seeded_doctor):
+    from queryimmune_db.connection import transaction
+
+    repository = HealthcareRepository()
+    actor_a = seeded_doctor
+    actor_b = repository.actor_by_subject("demo:dr-grace")
+    assert actor_b is not None
+    try:
+        app.dependency_overrides[get_current_actor] = lambda: actor_a
+        with TestClient(app) as client:
+            response_a = client.post("/api/v1/requests", json={"action": "appointments.mine"})
+        app.dependency_overrides[get_current_actor] = lambda: actor_b
+        with TestClient(app) as client:
+            response_b = client.post("/api/v1/requests", json={"action": "appointments.mine"})
+    finally:
+        app.dependency_overrides[get_current_actor] = lambda: actor_a
+
+    assert response_a.status_code == response_b.status_code == 200
+    patients_a = {row["synthetic_patient_number"] for row in response_a.json()["results"]}
+    patients_b = {row["synthetic_patient_number"] for row in response_b.json()["results"]}
+    assert patients_a and patients_b and patients_a.isdisjoint(patients_b)
+    with transaction(read_only=True, actor_context_id=UUID(actor_a.user_id)) as conn:
+        own_audit = conn.execute(
+            "SELECT actor_id::text FROM security.query_logs WHERE request_id=%s",
+            (UUID(response_a.json()["request_id"]),),
+        ).fetchall()
+        other_audit = conn.execute(
+            "SELECT actor_id::text FROM security.query_logs WHERE request_id=%s",
+            (UUID(response_b.json()["request_id"]),),
+        ).fetchall()
+    assert own_audit == [(actor_a.user_id,)]
+    assert other_audit == []
+
+    with TestClient(app) as client:
+        forged = client.post("/api/v1/requests", json={
+            "action": "appointments.mine", "actor_id": actor_b.user_id,
+        })
+    assert forged.status_code == 422
+
+
+@pytest.mark.database
+def test_shared_supported_aggregates_still_execute(seeded_doctor):
+    repository = HealthcareRepository()
+    for subject, action in (
+        ("demo:analyst-riley", "appointments.by_status"),
+        ("demo:billing-sam", "billing.summary"),
+    ):
+        authenticated_actor = repository.actor_by_subject(subject)
+        assert authenticated_actor is not None
+        app.dependency_overrides[get_current_actor] = lambda user=authenticated_actor: user
+        with TestClient(app) as client:
+            response = client.post("/api/v1/requests", json={"action": action})
+        assert response.status_code == 200
+        assert response.json()["decision"] == "allow"
+        assert response.json()["execution_status"] == "succeeded"
+    app.dependency_overrides[get_current_actor] = lambda: seeded_doctor
+
+
+@pytest.mark.database
+def test_actor_context_is_transaction_local(seeded_doctor):
+    import psycopg
+    from queryimmune_db.connection import database_url
+
+    with psycopg.connect(database_url()) as conn:
+        with conn.transaction():
+            conn.execute(
+                "SELECT set_config('queryimmune.actor_id', %s, true)",
+                (seeded_doctor.user_id,),
+            )
+            visible = conn.execute("SELECT count(*) FROM healthcare.doctors").fetchone()[0]
+            assert visible == 1
+        with conn.transaction():
+            setting = conn.execute(
+                "SELECT current_setting('queryimmune.actor_id', true)"
+            ).fetchone()[0]
+            visible = conn.execute("SELECT count(*) FROM healthcare.doctors").fetchone()[0]
+            assert setting in (None, "")
+            assert visible == 0
+
+
 def test_unsupported_medical_record_action_cannot_reach_execution():
     result = DeterministicPolicyPipeline(authorization_check=lambda *_: True).decide(
         ExecutionRequest(action="medical_records.read"), actor({"doctor"})
@@ -214,6 +342,14 @@ def test_sql_is_not_an_accepted_request_field():
 def test_client_cannot_assign_or_escalate_its_role():
     with pytest.raises(ValidationError):
         ExecutionRequest.model_validate({"action": "billing.summary", "roles": ["admin"]})
+
+
+def test_client_cannot_choose_database_actor_context():
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({
+            "action": "appointments.mine",
+            "actor_id": "10000000-0000-4000-8000-000000000007",
+        })
 
 
 def test_health_and_openapi_endpoints():
@@ -308,7 +444,7 @@ def test_live_demo_scenarios_use_validator_gateway_and_postgres(seeded_doctor, m
         assert dashboard_response.status_code == 200
         assert dashboard_response.json()["behavior_profile"]["profile_version"] >= 2
 
-    with transaction(read_only=True) as conn:
+    with transaction(read_only=True, actor_context_id=UUID(seeded_doctor.user_id)) as conn:
         logs = conn.execute("""SELECT count(*) FROM security.query_logs
             WHERE actor_id=%s AND decision IN ('allow','block')""", (UUID(seeded_doctor.user_id),)).fetchone()[0]
     assert logs >= 14

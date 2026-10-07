@@ -13,14 +13,15 @@ INSERT INTO healthcare.users(id, external_subject, display_name) VALUES
  ('10000000-0000-4000-8000-000000000003', 'demo:billing-sam', 'Sam Example Billing'),
  ('10000000-0000-4000-8000-000000000004', 'demo:analyst-riley', 'Riley Example Analyst'),
  ('10000000-0000-4000-8000-000000000005', 'demo:receptionist-jules', 'Jules Example Reception'),
- ('10000000-0000-4000-8000-000000000006', 'demo:unconfigured-role', 'Synthetic Unconfigured Role')
+ ('10000000-0000-4000-8000-000000000006', 'demo:unconfigured-role', 'Synthetic Unconfigured Role'),
+ ('10000000-0000-4000-8000-000000000007', 'demo:dr-grace', 'Dr Grace Example')
 ON CONFLICT (external_subject) DO NOTHING;
 INSERT INTO healthcare.user_roles(user_id, role_id)
 SELECT u.id, r.id FROM (VALUES
  ('demo:dr-ada', 'doctor'), ('demo:nurse-lee', 'nurse'),
  ('demo:billing-sam', 'billing'), ('demo:billing-sam', 'billing_staff'),
  ('demo:analyst-riley', 'analyst'), ('demo:receptionist-jules', 'receptionist'),
- ('demo:unconfigured-role', 'unknown_role')
+ ('demo:unconfigured-role', 'unknown_role'), ('demo:dr-grace', 'doctor')
 ) AS x(subject, role_name)
 JOIN healthcare.users u ON u.external_subject = x.subject
 JOIN healthcare.roles r ON r.name = x.role_name
@@ -56,6 +57,8 @@ INSERT INTO healthcare.doctors(id, user_id, synthetic_license_number, specialty)
  ('20000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'SYN-LIC-ADA-001', 'Family Medicine'),
  ('20000000-0000-4000-8000-000000000002', NULL, 'SYN-LIC-JAM-002', 'Cardiology')
 ON CONFLICT (synthetic_license_number) DO NOTHING;
+UPDATE healthcare.doctors SET user_id = '10000000-0000-4000-8000-000000000007'
+WHERE synthetic_license_number = 'SYN-LIC-JAM-002' AND user_id IS NULL;
 
 INSERT INTO healthcare.patients(id, synthetic_patient_number, given_name, family_name, date_of_birth, sex_at_birth) VALUES
  ('30000000-0000-4000-8000-000000000001', 'SYN-PAT-0001', 'Jordan', 'Example', '1988-04-12', 'unknown'),

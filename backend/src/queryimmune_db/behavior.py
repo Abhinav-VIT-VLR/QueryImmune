@@ -148,9 +148,11 @@ class ExplainableRiskEngine:
 
 
 class BehaviorRepository:
-    def load(self, actor_id: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    def load(
+        self, actor_id: str, *, actor_context_id: str
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
         from queryimmune_db.connection import transaction
-        with transaction(read_only=True) as conn:
+        with transaction(read_only=True, actor_context_id=actor_context_id) as conn:
             p = conn.execute("""SELECT approved_sample_count, feature_summary, profile_version
                 FROM security.behavior_profiles WHERE actor_id=%s AND update_status IN ('active','seeded')
                 ORDER BY profile_version DESC LIMIT 1""", (actor_id,)).fetchone()
@@ -160,17 +162,25 @@ class BehaviorRepository:
         profile = None if p is None else {"approved_sample_count": p[0], "feature_summary": p[1], "profile_version": p[2]}
         return profile, [{"created_at": row[0], "feature_snapshot": row[1]} for row in rows]
 
-    def append_profile(self, actor_id: str, expected_version: int, sample_count: int, summary: Mapping[str, Any]) -> None:
+    def append_profile(
+        self,
+        actor_id: str,
+        expected_version: int,
+        sample_count: int,
+        summary: Mapping[str, Any],
+        *,
+        actor_context_id: str,
+    ) -> None:
         from queryimmune_db.connection import transaction
         from psycopg.types.json import Jsonb
-        with transaction() as conn:
+        with transaction(actor_context_id=actor_context_id) as conn:
             conn.execute("SELECT security.append_behavior_profile(%s,%s::integer,%s::integer,%s::numeric,%s::timestamptz,%s::timestamptz,%s::jsonb)",
                 (actor_id, expected_version, sample_count, round(min(0.95, sample_count / 30), 2), datetime.now(timezone.utc)-timedelta(days=90),
                  datetime.now(timezone.utc), Jsonb(dict(summary))))
 
-    def eligible_sample_count(self, actor_id: str) -> int:
+    def eligible_sample_count(self, actor_id: str, *, actor_context_id: str) -> int:
         from queryimmune_db.connection import transaction
-        with transaction(read_only=True) as conn:
+        with transaction(read_only=True, actor_context_id=actor_context_id) as conn:
             row = conn.execute("""SELECT count(*) FROM security.query_logs q
                 JOIN security.risk_events r USING(request_id) WHERE q.actor_id=%s
                 AND q.decision='allow' AND q.execution_status='succeeded' AND q.created_at >= now()-interval '90 days'
@@ -193,7 +203,7 @@ class BehaviorAwarePipeline:
         if base.state != "allow":
             return base
         try:
-            profile, history = self.repository.load(actor.user_id)
+            profile, history = self.repository.load(actor.user_id, actor_context_id=actor.user_id)
         except (psycopg.Error, RuntimeError):
             return Decision("review", ("BEHAVIOR_CONTEXT_UNAVAILABLE",), 50.0,
                 "Behavioral context is unavailable; request requires review", "phase4-behavior-v1",
@@ -218,7 +228,14 @@ class ControlledProfileUpdater:
     def __init__(self, repository: BehaviorRepository | None = None):
         self.repository = repository or BehaviorRepository()
 
-    def observe_success(self, actor_id: str, features: Mapping[str, Any], result_size: int | None = None) -> None:
+    def observe_success(
+        self,
+        actor_id: str,
+        features: Mapping[str, Any],
+        result_size: int | None = None,
+        *,
+        actor_context_id: str,
+    ) -> None:
         if features.get("risk_level") != "LOW" or set(features.get("risk_reasons") or []) - {"BASELINE_WARMUP", "LEGITIMATE_WORKLOAD_DRIFT"}:
             return
         # Gateway results are capped at 100 rows. Refuse impossible/out-of-policy
@@ -226,9 +243,9 @@ class ControlledProfileUpdater:
         # checks the value against audited successful query_logs.
         if result_size is not None and (not isinstance(result_size, int) or result_size < 0 or result_size > 100):
             return
-        profile, _ = self.repository.load(actor_id)
+        profile, _ = self.repository.load(actor_id, actor_context_id=actor_context_id)
         version = int((profile or {}).get("profile_version") or 0)
-        count = self.repository.eligible_sample_count(actor_id)
+        count = self.repository.eligible_sample_count(actor_id, actor_context_id=actor_context_id)
         if count < 10 or count % 5:
             return
         prior = dict((profile or {}).get("feature_summary") or {})
@@ -252,4 +269,6 @@ class ControlledProfileUpdater:
                       "frequency_sample_count": count})
         if result_size is not None:
             prior["result_size_max"] = max(int(prior.get("result_size_max", 0)), result_size)
-        self.repository.append_profile(actor_id, version, count, prior)
+        self.repository.append_profile(
+            actor_id, version, count, prior, actor_context_id=actor_context_id
+        )

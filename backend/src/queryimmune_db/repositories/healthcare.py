@@ -117,7 +117,15 @@ class HealthcareRepository:
                  decision.profile_version),
             )
 
-    def execute_action(self, action: str, actor_id: UUID, limit: int, from_date: date | None) -> list[dict[str, Any]]:
+    def execute_action(
+        self,
+        action: str,
+        actor_id: UUID,
+        limit: int,
+        from_date: date | None,
+        *,
+        actor_context_id: UUID,
+    ) -> list[dict[str, Any]]:
         query = self._queries.get(action)
         if query is None:
             raise ValueError("unsupported action cannot be executed")
@@ -129,7 +137,15 @@ class HealthcareRepository:
             params = (from_date, limit)
         else:
             params = (from_date, from_date, limit)
-        with transaction(read_only=True) as conn:
+        # The shared aggregate actions are fixed broker templates whose access
+        # is already authorized by the policy engine. All other reads stay
+        # inside the authenticated actor's RLS scope.
+        shared_read = action in {"appointments.by_status", "appointments.cardiology_today"}
+        with transaction(
+            read_only=True,
+            actor_context_id=actor_context_id,
+            allow_shared_healthcare_read=shared_read,
+        ) as conn:
             cursor = conn.execute(query, params)
             rows = cursor.fetchall()
             columns = [column.name for column in cursor.description or ()]
@@ -142,9 +158,9 @@ class HealthcareRepository:
                 (request_id, execution_status, duration_ms, row_count),
             )
 
-    def dashboard(self, actor_id: UUID) -> dict[str, Any]:
+    def dashboard(self, actor_id: UUID, *, actor_context_id: UUID) -> dict[str, Any]:
         """Return only the authenticated actor's persisted audit and baseline metadata."""
-        with transaction(read_only=True) as conn:
+        with transaction(read_only=True, actor_context_id=actor_context_id) as conn:
             history_rows = conn.execute("""SELECT q.request_id::text, q.created_at, q.decision,
                     q.execution_status, q.duration_ms, q.row_count, r.risk_score, r.reason_codes,
                     r.feature_snapshot, r.policy_version
