@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import hashlib
+from typing import Callable
 
 from queryimmune_db.ai.intent import QueryIntent, ValidationResult
 from queryimmune_db.ai.provider import LLMProvider
@@ -56,9 +57,15 @@ class NL2SQLPipeline:
 class ValidatedIntentPolicy:
     """Preserves deterministic role/risk restrictions and vetoes every mismatch first."""
 
-    def __init__(self, analysis: NL2SQLAnalysis, result_limit: int, review_limit: int):
+    def __init__(
+        self,
+        analysis: NL2SQLAnalysis,
+        result_limit: int,
+        review_limit: int,
+        authorization_check: Callable[[str, str, tuple[str, ...]], bool] | None = None,
+    ):
         self.analysis = analysis
-        self.static_policy = DeterministicPolicyPipeline(result_limit, review_limit)
+        self.static_policy = DeterministicPolicyPipeline(result_limit, review_limit, authorization_check)
 
     def decide(self, request: ExecutionRequest, actor: Actor) -> Decision:
         validation = self.analysis.validation
@@ -87,7 +94,6 @@ class ValidatedIntentPolicy:
                 self.analysis.model_version, features,
             )
         decision = self.static_policy.decide(request, actor)
-        features["allowed_roles"] = list(decision.feature_snapshot.get("allowed_roles", []))
         features["limit"] = intent.limit
         return replace(
             decision,

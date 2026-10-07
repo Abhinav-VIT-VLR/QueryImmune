@@ -84,10 +84,11 @@ def test_behavior_risk_keeps_authorized_role_context():
         tables=["appointments", "doctors"], columns=["patient_id"], filters=[], aggregations=["count"],
         group_by=[], ordering=[], limit=1, scope="aggregate", sensitivity_expectations=["standard"])
     analysis = NL2SQLAnalysis(intent, ValidationResult(valid=True, reasons=[]), "test", "fingerprint", "")
-    decision = ValidatedIntentPolicy(analysis, 100, 25).decide(ExecutionRequest(action=intent.action, limit=1),
+    decision = ValidatedIntentPolicy(analysis, 100, 25, authorization_check=lambda *_: True).decide(ExecutionRequest(action=intent.action, limit=1),
         Actor("user", "subject", "Doctor", frozenset({"doctor"})))
     assert decision.state == "allow"
-    assert decision.feature_snapshot["allowed_roles"] == ["admin", "analyst", "doctor"]
+    assert decision.feature_snapshot["action"] == "appointments.cardiology_today"
+    assert "allowed_roles" not in decision.feature_snapshot
 
 
 def test_profile_updater_rejects_poisoning_inputs_and_requires_sample_gate():

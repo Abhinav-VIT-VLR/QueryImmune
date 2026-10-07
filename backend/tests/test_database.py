@@ -54,6 +54,20 @@ def test_runtime_grants_hide_patient_demographics_and_raw_billing_rows():
     assert "billing_created_at_idx on healthcare.billing(created_at)" in migration
 
 
+def test_authorization_migration_is_role_referenced_and_runtime_read_only():
+    migration = (ROOT / "migrations" / "009_database_action_authorization.sql").read_text(encoding="utf-8").lower()
+    seed = (ROOT / "seed" / "001_synthetic_healthcare.sql").read_text(encoding="utf-8").lower()
+    assert "create table security.action_role_policies" in migration
+    assert "role_id uuid not null references healthcare.roles(id)" in migration
+    assert "action text not null" in migration and "resource text not null" in migration
+    assert "enabled boolean not null" in migration
+    assert "grant select on security.action_role_policies to qi_runtime" in migration
+    assert "grant insert" not in migration and "grant update" not in migration
+    assert "appointments.mine', 'patients', 'doctor'" in seed
+    assert "medical_records.read" not in seed
+    assert "billing_staff" in seed and "receptionist" in seed
+
+
 @pytest.mark.database
 def test_live_database_constraints_indexes_seed_and_readonly_transaction() -> None:
     if not os.environ.get("DATABASE_URL"):

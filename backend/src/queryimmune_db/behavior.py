@@ -140,12 +140,8 @@ class ExplainableRiskEngine:
             codes.append("BROAD_OR_UNKNOWN_SCOPE")
         factors["behavior_deviation"] = behavior.deviation * 0.35
         factors["workload_drift"] = 10.0 if behavior.drift else 0.0
-        roles = _set(features.get("role_context"))
-        if roles and not roles.intersection(_set(features.get("allowed_roles"))):
-            factors["role_context"] = 100.0
-            codes.append("ROLE_CONTEXT_MISMATCH")
-        else:
-            factors["role_context"] = 0.0
+        # Authorization has already been decided by the deterministic database
+        # policy. A behavior score must not duplicate an in-code role matrix.
         score = min(100.0, round(sum(factors.values()), 2))
         level, state = ("HIGH", "block") if score >= 60 else ("MEDIUM", "review") if score >= 25 else ("LOW", "allow")
         return RiskAssessment(score, level, state, tuple(dict.fromkeys(codes)), factors)

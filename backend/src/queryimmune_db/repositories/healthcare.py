@@ -67,6 +67,34 @@ class HealthcareRepository:
             return None
         return Actor(user_id=row[0], subject=row[1], display_name=row[2], roles=frozenset(row[4]))
 
+    def is_action_authorized(self, actor_id: str, action: str, resources: tuple[str, ...]) -> bool:
+        """Authorize only when the active database user has a role policy for every resource.
+
+        Role assignments and authorization rows are both read from PostgreSQL;
+        caller-supplied Actor.roles is deliberately not an authority here.
+        """
+        if not resources:
+            return False
+        with transaction(read_only=True) as conn:
+            row = conn.execute(
+                """SELECT NOT EXISTS (
+                       SELECT required.resource
+                       FROM unnest(%s::text[]) AS required(resource)
+                       WHERE NOT EXISTS (
+                           SELECT 1
+                           FROM healthcare.users u
+                           JOIN healthcare.user_roles ur ON ur.user_id = u.id
+                           JOIN healthcare.roles r ON r.id = ur.role_id
+                           JOIN security.action_role_policies p ON p.role_id = r.id
+                           WHERE u.id = %s AND u.status = 'active'
+                             AND p.action = %s AND p.resource = required.resource
+                             AND p.enabled
+                       )
+                   )""",
+                (list(resources), actor_id, action),
+            ).fetchone()
+        return bool(row[0])
+
     def write_decision(
         self, request_id: UUID, actor_id: UUID, decision: Decision, action: str, limit: int,
         *, query_fingerprint: str | None = None,

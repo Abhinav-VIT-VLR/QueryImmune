@@ -22,7 +22,9 @@ def actor(roles: set[str]) -> Actor:
 
 
 def test_role_policy_blocks_unauthorized_action():
-    result = DeterministicPolicyPipeline().decide(ExecutionRequest(action="billing.summary"), actor({"doctor"}))
+    result = DeterministicPolicyPipeline(authorization_check=lambda *_: False).decide(
+        ExecutionRequest(action="billing.summary"), actor({"doctor"})
+    )
     assert result.state == "block"
     assert result.reason_codes == ("ROLE_NOT_ALLOWED",)
 
@@ -34,7 +36,9 @@ def test_unknown_operation_is_blocked():
 
 
 def test_broad_action_requires_review():
-    result = DeterministicPolicyPipeline().decide(ExecutionRequest(action="appointments.mine", limit=50), actor({"doctor"}))
+    result = DeterministicPolicyPipeline(authorization_check=lambda *_: True).decide(
+        ExecutionRequest(action="appointments.mine", limit=50), actor({"doctor"})
+    )
     assert result.state == "review"
     assert result.reason_codes == ("SCOPE_TOO_BROAD",)
 
@@ -99,6 +103,107 @@ def test_unauthorized_operation_fails_without_execution(seeded_doctor):
     assert response.status_code == 403
     assert response.json()["reason_codes"] == ["ROLE_NOT_ALLOWED"]
     assert response.json()["execution_status"] == "not_run"
+
+
+@pytest.mark.database
+def test_action_authorization_is_read_from_postgres(seeded_doctor):
+    """Removing a database permission changes the real API decision immediately."""
+    import psycopg
+
+    admin_url = os.environ.get("DATABASE_ADMIN_URL")
+    if not admin_url:
+        pytest.skip("requires DATABASE_ADMIN_URL to safely mutate policy fixtures")
+    with psycopg.connect(admin_url, autocommit=True) as conn:
+        role_id = conn.execute("SELECT id FROM healthcare.roles WHERE name = 'doctor'").fetchone()[0]
+        original = conn.execute(
+            "SELECT enabled FROM security.action_role_policies "
+            "WHERE action='appointments.mine' AND resource='patients' AND role_id=%s",
+            (role_id,),
+        ).fetchone()
+        assert original == (True,)
+        try:
+            conn.execute(
+                "DELETE FROM security.action_role_policies "
+                "WHERE action='appointments.mine' AND resource='patients' AND role_id=%s",
+                (role_id,),
+            )
+            with TestClient(app) as client:
+                denied = client.post("/api/v1/requests", json={"action": "appointments.mine", "limit": 10})
+            assert denied.status_code == 403
+            assert denied.json()["decision"] == "block"
+            assert denied.json()["reason_codes"] == ["ROLE_NOT_ALLOWED"]
+        finally:
+            conn.execute(
+                "INSERT INTO security.action_role_policies(action, resource, role_id, enabled) "
+                "VALUES ('appointments.mine', 'patients', %s, %s) "
+                "ON CONFLICT (action, resource, role_id) DO UPDATE SET enabled=EXCLUDED.enabled",
+                (role_id, original[0]),
+            )
+    with TestClient(app) as client:
+        restored = client.post("/api/v1/requests", json={"action": "appointments.mine", "limit": 10})
+    assert restored.status_code == 200
+    assert restored.json()["decision"] == "allow"
+
+
+@pytest.mark.database
+def test_seeded_role_resource_policies_fail_closed(seeded_doctor):
+    repository = HealthcareRepository()
+    billing = repository.actor_by_subject("demo:billing-sam")
+    receptionist = repository.actor_by_subject("demo:receptionist-jules")
+    unknown_role = repository.actor_by_subject("demo:unconfigured-role")
+    assert billing and "billing_staff" in billing.roles
+    assert receptionist and "receptionist" in receptionist.roles
+    assert unknown_role and "unknown_role" in unknown_role.roles
+
+    assert repository.is_action_authorized(
+        seeded_doctor.user_id, "appointments.mine", ("appointments", "patients", "doctors")
+    )
+    # Even forged in-memory role claims cannot change the role assignments read
+    # by the authorization SQL.
+    spoofed_admin = replace(seeded_doctor, roles=frozenset({"admin"}))
+    spoofed_decision = DeterministicPolicyPipeline().decide(
+        ExecutionRequest(action="billing.summary"), spoofed_admin
+    )
+    assert spoofed_decision.state == "block"
+    assert spoofed_decision.reason_codes == ("ROLE_NOT_ALLOWED",)
+    # The medical-record resource has no policy or broker action today, so every
+    # role is denied and no PostgreSQL grant is broadened.
+    assert not repository.is_action_authorized(
+        billing.user_id, "medical_records.read", ("medical_records",)
+    )
+    assert not repository.is_action_authorized(
+        receptionist.user_id, "medical_records.read", ("medical_records",)
+    )
+    assert not repository.is_action_authorized(
+        seeded_doctor.user_id, "medical_records.read", ("medical_records",)
+    )
+    assert not repository.is_action_authorized(
+        seeded_doctor.user_id, "appointments.mine", ("unknown_resource",)
+    )
+    assert not repository.is_action_authorized(
+        seeded_doctor.user_id, "unknown.action", ("appointments",)
+    )
+    assert not repository.is_action_authorized(
+        "00000000-0000-4000-8000-000000000000", "appointments.mine", ("appointments",)
+    )
+
+    app.dependency_overrides[get_current_actor] = lambda: unknown_role
+    try:
+        with TestClient(app) as client:
+            response = client.post("/api/v1/requests", json={"action": "appointments.mine"})
+        assert response.status_code == 403
+        assert response.json()["reason_codes"] == ["ROLE_NOT_ALLOWED"]
+        assert response.json()["execution_status"] == "not_run"
+    finally:
+        app.dependency_overrides.pop(get_current_actor, None)
+
+
+def test_unsupported_medical_record_action_cannot_reach_execution():
+    result = DeterministicPolicyPipeline(authorization_check=lambda *_: True).decide(
+        ExecutionRequest(action="medical_records.read"), actor({"doctor"})
+    )
+    assert result.state == "block"
+    assert result.reason_codes == ("UNSUPPORTED_ACTION",)
 
 
 def test_sql_is_not_an_accepted_request_field():
