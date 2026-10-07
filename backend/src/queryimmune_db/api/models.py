@@ -21,6 +21,7 @@ class NaturalLanguageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     request: str = Field(min_length=3, max_length=2000)
+    demo_scenario: Literal["normal", "sensitive", "destructive", "mismatch", "drift"] | None = None
 
 
 class DecisionResponse(BaseModel):
@@ -29,6 +30,9 @@ class DecisionResponse(BaseModel):
     reason_codes: list[str]
     message: str
     execution_status: Literal["not_run", "succeeded", "failed"]
+    risk_score: float | None = None
+    risk_level: Literal["LOW", "MEDIUM", "HIGH"] | None = None
+    risk_analysis: dict[str, object] | None = None
     row_count: int | None = None
     results: list[dict[str, object]] | None = None
 
@@ -41,6 +45,10 @@ class NaturalLanguageResponse(BaseModel):
     intent: QueryIntent | None = None
     validation: ValidationResult | None = None
     provider_model: str | None = None
+    generated_sql: str | None = None
+    risk_score: float | None = None
+    risk_level: Literal["LOW", "MEDIUM", "HIGH"] | None = None
+    risk_analysis: dict[str, object] | None = None
     execution_status: Literal["not_run", "succeeded", "failed"]
     row_count: int | None = None
     results: list[dict[str, object]] | None = None
@@ -48,3 +56,10 @@ class NaturalLanguageResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "unavailable"]
+
+
+class DashboardResponse(BaseModel):
+    history: list[dict[str, object]]
+    risk_events: list[dict[str, object]]
+    behavior_profile: dict[str, object] | None
+    workload: list[dict[str, object]]

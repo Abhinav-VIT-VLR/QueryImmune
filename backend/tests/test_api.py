@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
@@ -113,8 +114,59 @@ def test_health_and_openapi_endpoints():
     assert "sql" not in schema["components"]["schemas"]["ExecutionRequest"].get("properties", {})
 
 
+def test_demo_console_is_served_same_origin_and_dashboard_requires_authentication():
+    with TestClient(app) as client:
+        page = client.get("/")
+        script = client.get("/static/app.js")
+        dashboard = client.get("/api/v1/dashboard")
+    assert page.status_code == 200 and "Query intelligence" in page.text
+    assert script.status_code == 200 and "api/v1/nl-requests" in script.text
+    assert dashboard.status_code == 401
+
+
 def test_execution_route_requires_authentication_and_returns_request_id():
     with TestClient(app) as client:
         response = client.post("/api/v1/requests", json={"action": "appointments.mine"})
     assert response.status_code == 401
     assert UUID(response.headers["x-request-id"])
+
+
+@pytest.mark.database
+def test_live_demo_scenarios_use_validator_gateway_and_postgres(seeded_doctor, monkeypatch):
+    from importlib import import_module
+    from queryimmune_db.connection import transaction
+
+    app_module = import_module("queryimmune_db.api.app")
+    monkeypatch.setattr(app_module, "settings", replace(app_module.settings, ai_provider="demo"))
+    cases = [
+        ("normal", "How many patients visited cardiology today?", "allow"),
+        ("sensitive", "Show the medical history of every patient.", "block"),
+        ("destructive", "Delete all patient records.", "block"),
+        ("mismatch", "Show my appointments.", "block"),
+    ]
+    with TestClient(app) as client:
+        for scenario, prompt, expected in cases:
+            response = client.post("/api/v1/nl-requests", json={"request": prompt, "demo_scenario": scenario})
+            body = response.json()
+            assert body["decision"] == expected
+            assert body["generated_sql"]
+            if expected == "block":
+                assert body["execution_status"] == "not_run"
+            else:
+                assert body["execution_status"] == "succeeded"
+                assert body["results"][0]["patient_count"] >= 0
+
+        drift_response = None
+        for _ in range(10):
+            drift_response = client.post("/api/v1/nl-requests", json={
+                "request": "Show my first 10 appointments.", "demo_scenario": "drift",
+            })
+            assert drift_response.json()["decision"] == "allow"
+        dashboard_response = client.get("/api/v1/dashboard")
+        assert dashboard_response.status_code == 200
+        assert dashboard_response.json()["behavior_profile"]["profile_version"] >= 2
+
+    with transaction(read_only=True) as conn:
+        logs = conn.execute("""SELECT count(*) FROM security.query_logs
+            WHERE actor_id=%s AND decision IN ('allow','block')""", (UUID(seeded_doctor.user_id),)).fetchone()[0]
+    assert logs >= 14

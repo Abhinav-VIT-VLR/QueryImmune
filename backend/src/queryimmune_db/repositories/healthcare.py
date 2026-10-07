@@ -42,6 +42,15 @@ class HealthcareRepository:
             WHERE (%s::date IS NULL OR created_at::date >= %s::date)
             GROUP BY status, currency ORDER BY status, currency LIMIT %s
         """,
+        "appointments.cardiology_today": """
+            SELECT count(DISTINCT a.patient_id) AS patient_count
+            FROM healthcare.appointments a
+            JOIN healthcare.doctors d ON d.id = a.doctor_id
+            WHERE d.specialty = 'Cardiology'
+              AND a.status = 'completed'
+              AND a.scheduled_at::date = CURRENT_DATE
+            LIMIT %s
+        """,
     }
 
     def actor_by_subject(self, subject: str) -> Actor | None:
@@ -87,6 +96,8 @@ class HealthcareRepository:
             raise ValueError("unsupported action cannot be executed")
         if action == "appointments.mine":
             params = (actor_id, from_date, from_date, limit)
+        elif action == "appointments.cardiology_today":
+            params = (limit,)
         else:
             params = (from_date, from_date, limit)
         with transaction(read_only=True) as conn:
@@ -101,6 +112,42 @@ class HealthcareRepository:
                 "SELECT security.finish_query_log(%s, %s, %s, %s)",
                 (request_id, execution_status, duration_ms, row_count),
             )
+
+    def dashboard(self, actor_id: UUID) -> dict[str, Any]:
+        """Return only the authenticated actor's persisted audit and baseline metadata."""
+        with transaction(read_only=True) as conn:
+            history_rows = conn.execute("""SELECT q.request_id::text, q.created_at, q.decision,
+                    q.execution_status, q.duration_ms, q.row_count, r.risk_score, r.reason_codes,
+                    r.feature_snapshot, r.policy_version
+                FROM security.query_logs q JOIN security.risk_events r USING (request_id)
+                WHERE q.actor_id=%s ORDER BY q.created_at DESC LIMIT 50""", (actor_id,)).fetchall()
+            profile_row = conn.execute("""SELECT profile_version, window_start, window_end,
+                    approved_sample_count, confidence, feature_summary, update_status, updated_at
+                FROM security.behavior_profiles WHERE actor_id=%s
+                ORDER BY profile_version DESC LIMIT 1""", (actor_id,)).fetchone()
+            workload_rows = conn.execute("""SELECT date_trunc('day', q.created_at)::date::text AS day,
+                    coalesce(r.feature_snapshot->>'action', 'unknown') AS action,
+                    count(*) AS requests, round(avg(r.risk_score), 2) AS mean_risk
+                FROM security.query_logs q JOIN security.risk_events r USING (request_id)
+                WHERE q.actor_id=%s AND q.created_at >= now() - interval '30 days'
+                GROUP BY 1, 2 ORDER BY 1, 2""", (actor_id,)).fetchall()
+        history = [{"request_id": row[0], "created_at": _json_value(row[1]), "decision": row[2],
+                    "execution_status": row[3], "duration_ms": row[4], "row_count": row[5],
+                    "risk_score": float(row[6]), "reason_codes": list(row[7]),
+                    "action": row[8].get("action"), "risk_level": row[8].get("risk_level"),
+                    "policy_version": row[9]} for row in history_rows]
+        risk_events = [{"request_id": item["request_id"], "created_at": item["created_at"],
+                        "decision": item["decision"], "risk_score": item["risk_score"],
+                        "risk_level": item["risk_level"], "reason_codes": item["reason_codes"],
+                        "action": item["action"]} for item in history]
+        profile = None if profile_row is None else {
+            "profile_version": profile_row[0], "window_start": _json_value(profile_row[1]),
+            "window_end": _json_value(profile_row[2]), "approved_sample_count": profile_row[3],
+            "confidence": float(profile_row[4]), "feature_summary": profile_row[5],
+            "update_status": profile_row[6], "updated_at": _json_value(profile_row[7]),
+        }
+        workload = [{"day": row[0], "action": row[1], "requests": row[2], "mean_risk": float(row[3] or 0)} for row in workload_rows]
+        return {"history": history, "risk_events": risk_events, "behavior_profile": profile, "workload": workload}
 
 
 def _json_value(value: Any) -> Any:

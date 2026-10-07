@@ -41,7 +41,7 @@ BEGIN
     WHERE q.actor_id = p_actor_id AND q.decision = 'allow'
       AND q.execution_status = 'succeeded' AND q.created_at >= now() - interval '90 days'
       AND r.risk_score < 25 AND r.feature_snapshot->>'risk_level' = 'LOW'
-      AND coalesce(r.feature_snapshot->'risk_reasons', '[]'::jsonb) <@ '["BASELINE_WARMUP"]'::jsonb;
+      AND coalesce(r.feature_snapshot->'risk_reasons', '[]'::jsonb) <@ '["BASELINE_WARMUP","LEGITIMATE_WORKLOAD_DRIFT"]'::jsonb;
     IF v_eligible <> p_sample_count OR v_eligible < 10 OR v_eligible % 5 <> 0 THEN
         RAISE EXCEPTION 'behavior profile sample gate rejected update' USING ERRCODE = '23514';
     END IF;
@@ -54,7 +54,7 @@ BEGIN
         WHERE q.actor_id = p_actor_id AND q.decision = 'allow'
           AND q.execution_status = 'succeeded' AND q.created_at >= now() - interval '90 days'
           AND r.risk_score < 25 AND r.feature_snapshot->>'risk_level' = 'LOW'
-          AND coalesce(r.feature_snapshot->'risk_reasons', '[]'::jsonb) <@ '["BASELINE_WARMUP"]'::jsonb
+          AND coalesce(r.feature_snapshot->'risk_reasons', '[]'::jsonb) <@ '["BASELINE_WARMUP","LEGITIMATE_WORKLOAD_DRIFT"]'::jsonb
     )
     SELECT jsonb_build_object(
         'actions', coalesce((SELECT jsonb_agg(DISTINCT to_jsonb(feature_snapshot->>'action')) FROM eligible WHERE feature_snapshot ? 'action'), '[]'::jsonb),
@@ -70,6 +70,8 @@ BEGIN
     ) INTO v_allowed;
     SELECT feature_summary INTO v_previous FROM security.behavior_profiles
     WHERE actor_id = p_actor_id AND profile_version = v_latest;
+    SELECT jsonb_object_agg(a.key, a.value || coalesce(v_previous->a.key, '[]'::jsonb))
+    INTO v_allowed FROM jsonb_each(v_allowed) a;
     IF EXISTS (SELECT 1 FROM jsonb_each(v_allowed) a
                WHERE NOT (coalesce(p_feature_summary->a.key, '[]'::jsonb) <@ a.value)) THEN
         RAISE EXCEPTION 'profile contains unobserved behavior' USING ERRCODE = '23514';

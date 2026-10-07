@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f7f8">
+  <title>QueryImmune — Workload defense</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/"><span class="brand-mark">Q</span><span>Query<span class="brand-light">Immune</span></span></a>
+    <div class="nav-label">WORKSPACE</div>
+    <a class="nav-item active" href="#query"><span>⌕</span> Query console</a>
+    <a class="nav-item" href="#history"><span>◷</span> Query history</a>
+    <a class="nav-item" href="#audit"><span>◎</span> Risk &amp; audit</a>
+    <div class="side-bottom">
+      <div class="security-card"><div class="tiny-icon">✳</div><b>Protected by policy</b><p>Every request is checked before it reaches PostgreSQL.</p><span class="live"><i></i> ENFORCEMENT ACTIVE</span></div>
+      <div class="user-box"><div class="avatar">QI</div><div class="user-meta"><b>Authenticated session</b><span id="identity-status">Token required</span></div><button id="token-open" class="icon-button" title="Set API token">⚙</button></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar"><div class="crumb">SECURITY CONSOLE <span>/</span> LIVE QUERY</div><div class="top-right"><span id="demo-mode" class="tag" hidden>DETERMINISTIC DEMO FIXTURES</span><span class="db-indicator"><i id="db-dot"></i><span id="db-status">Checking database…</span></span><button class="quiet-button" id="refresh-button">↻ <span>Refresh</span></button></div></header>
+    <section class="page-heading" id="query"><div><div class="eyebrow">ADAPTIVE DATABASE DEFENSE</div><h1>Query intelligence</h1><p>Understand the request. Evaluate its risk. Decide before execution.</p></div><div class="heading-badge"><span>●</span> PostgreSQL connected</div></section>
+
+    <section class="query-card panel">
+      <div class="card-title"><div><span class="step">01</span><b>Ask your database</b></div><span class="muted">Natural language · policy checked before execution</span></div>
+      <textarea id="query-input" rows="2" placeholder="Ask a question about the healthcare database…"></textarea>
+      <div class="query-actions"><div class="suggestions"><span>TRY A SCENARIO</span><button data-scenario="normal" data-prompt="How many patients visited cardiology today?">Normal</button><button data-scenario="sensitive" data-prompt="Show the medical history of every patient.">Sensitive</button><button data-scenario="destructive" data-prompt="Delete all patient records.">Destructive</button><button data-scenario="mismatch" data-prompt="Show my appointments.">Intent mismatch</button><button data-scenario="drift" data-prompt="Show my first 10 appointments.">Workload shift</button></div><button id="run-button" class="primary-button"><span>Run security check</span><b>→</b></button></div>
+      <div class="auth-hint" id="auth-hint">A valid API bearer token is required. Set it from the session settings below.</div>
+    </section>
+
+    <section class="decision-row" id="decision-section" hidden>
+      <article class="decision-card panel" id="decision-card"><div class="decision-main"><div class="decision-icon" id="decision-icon">✓</div><div><div class="eyebrow" id="decision-kicker">SECURITY DECISION</div><h2 id="decision-title">—</h2><p id="decision-message">—</p></div></div><div class="risk-meter"><div class="meter-head"><span>RISK SCORE</span><b id="risk-score">—</b></div><div class="meter-track"><div id="risk-fill"></div></div><div class="meter-scale"><span>LOW</span><span>MEDIUM</span><span>HIGH</span></div></div><div class="decision-reasons" id="decision-reasons"></div></article>
+      <article class="panel request-meta"><div class="panel-heading"><div><span class="step">02</span><b>Request analysis</b></div><span class="tag" id="sensitivity-tag">SENSITIVITY</span></div><div class="meta-grid"><div><label>OPERATION</label><b id="intent-operation">—</b></div><div><label>ENTITY / ACTION</label><b id="intent-action">—</b></div><div><label>REQUESTED SCOPE</label><b id="intent-scope">—</b></div><div><label>TABLES</label><b id="intent-tables">—</b></div></div><div class="behavior-mini"><div class="behavior-symbol">↗</div><div><label>BEHAVIOR SIGNAL</label><b id="behavior-state">—</b></div><span id="drift-tag" class="drift-tag">—</span></div></article>
+    </section>
+
+    <section class="analysis-grid" id="analysis-section" hidden>
+      <article class="panel code-panel"><div class="panel-heading"><div><span class="step">03</span><b>Generated SQL</b></div><span class="untrusted-label"><i></i> UNTRUSTED CANDIDATE</span></div><pre><code id="sql-output">Candidate SQL appears here after the API response.</code></pre><div class="code-foot">Parsed and checked by the PostgreSQL AST validator. The model never executes this text.</div></article>
+      <article class="panel factors-panel"><div class="panel-heading"><div><span class="step">04</span><b>Behavioral assessment</b></div><span class="confidence" id="profile-confidence">PROFILE —</span></div><div class="factor-list" id="factor-list"><div class="empty-state">Behavior analysis will appear with the decision.</div></div><div class="drift-summary"><div class="spark-icon">⌁</div><div><b id="drift-title">Workload context</b><span id="drift-description">Based on approved query history and the current profile.</span></div></div></article>
+    </section>
+
+    <section class="panel results-panel" id="results-section" hidden><div class="panel-heading"><div><span class="step">05</span><b>Query result</b></div><span id="result-summary" class="muted"></span></div><div id="result-content" class="result-content"></div></section>
+
+    <section class="lower-grid" id="history">
+      <article class="panel workload-panel"><div class="panel-heading"><div><span class="step">06</span><b>Workload over time</b></div><span class="period-label">LAST 30 DAYS</span></div><div id="workload-chart" class="workload-chart"><div class="empty-state">Connect with a valid token to load persisted workload events.</div></div><div class="chart-legend"><span><i class="legend-allow"></i> Requests</span><span><i class="legend-risk"></i> Average risk</span></div></article>
+      <article class="panel profile-panel"><div class="panel-heading"><div><span class="step">07</span><b>Behavior profile</b></div><span id="profile-status" class="status-pill">NOT LOADED</span></div><div id="profile-content" class="profile-content"><div class="empty-state">Profile data is read from PostgreSQL after authentication.</div></div></article>
+    </section>
+
+    <section class="panel table-panel" id="audit"><div class="panel-heading"><div><span class="step">08</span><b>Recent decisions</b></div><button class="text-button" id="refresh-history">Refresh ↻</button></div><div class="table-wrap"><table><thead><tr><th>REQUEST</th><th>TIME</th><th>ACTION</th><th>DECISION</th><th>RISK</th><th>RESULT</th><th>REASONS</th></tr></thead><tbody id="history-body"><tr><td colspan="7" class="empty-state">Authenticate to load query history and audit events.</td></tr></tbody></table></div></section>
+    <footer><span>QueryImmune</span><span>Healthcare security prototype · synthetic data only</span><span>Risk decisions are policy outputs, not clinical advice.</span></footer>
+  </main>
+
+  <dialog id="token-dialog"><form method="dialog" class="token-form"><div class="panel-heading"><b>Connect to QueryImmune API</b><button class="icon-button" value="cancel" aria-label="Close">×</button></div><p>Paste a valid bearer token from your configured identity provider. The token stays in this browser tab and is sent only to this API.</p><label for="token-input">API BEARER TOKEN</label><textarea id="token-input" rows="4" placeholder="eyJ…"></textarea><div class="dialog-actions"><button class="quiet-button" value="cancel">Cancel</button><button id="save-token" class="primary-button" value="default">Connect <b>→</b></button></div></form></dialog>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

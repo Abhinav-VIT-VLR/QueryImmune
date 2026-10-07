@@ -19,6 +19,7 @@ class NL2SQLAnalysis:
     validation: ValidationResult
     model_version: str
     candidate_fingerprint: str
+    candidate_sql: str
 
 
 class NL2SQLPipeline:
@@ -48,7 +49,7 @@ class NL2SQLPipeline:
         candidate_fingerprint = validation.analysis.canonical_fingerprint if validation.analysis else hashlib.sha256(candidate_sql.encode("utf-8")).hexdigest()
         return NL2SQLAnalysis(
             intent=intent, validation=validation, model_version=self.provider.model_version,
-            candidate_fingerprint=candidate_fingerprint,
+            candidate_fingerprint=candidate_fingerprint, candidate_sql=candidate_sql,
         )
 
 
@@ -77,7 +78,7 @@ class ValidatedIntentPolicy:
             "columns": intent.columns,
             "scope": intent.scope,
             "sensitivity": "restricted" if "restricted" in intent.sensitivity_expectations else "sensitive" if "sensitive" in intent.sensitivity_expectations else "standard",
-            "semantic_signature": ":".join((intent.action, ",".join(sorted(intent.tables)), ",".join(sorted(intent.columns)), ",".join(sorted(intent.aggregations)), intent.scope)),
+            "semantic_signature": ":".join((intent.action, ",".join(sorted(intent.tables)), ",".join(sorted(intent.columns)), ",".join(sorted(intent.aggregations)), intent.scope, f"limit-{_limit_bucket(intent.limit)}")),
         }
         if not validation.valid:
             return Decision(
@@ -113,3 +114,7 @@ def execution_request(intent: QueryIntent) -> ExecutionRequest:
         if item.column.rsplit(".", 1)[-1] == date_column and item.operator == "gte":
             date_filter = date.fromisoformat(str(item.value))
     return ExecutionRequest(action=intent.action, limit=intent.limit, from_date=date_filter)
+
+
+def _limit_bucket(limit: int) -> str:
+    return "small" if limit <= 10 else "standard" if limit <= 25 else "broad"

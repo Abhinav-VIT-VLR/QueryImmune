@@ -15,6 +15,7 @@ ACTION_TABLES = {
     "appointments.mine": {"appointments", "patients", "doctors"},
     "appointments.by_status": {"appointments", "doctors"},
     "billing.summary": {"billing"},
+    "appointments.cardiology_today": {"appointments", "doctors"},
 }
 _TEMPLATE_SHAPES = {
     "appointments.mine": (
@@ -28,6 +29,7 @@ _TEMPLATE_SHAPES = {
         {"status", "currency", "amount"}, {"count", "sum"}, {"status", "currency"},
         {("status", "asc"), ("currency", "asc")},
     ),
+    "appointments.cardiology_today": ({"patient_id"}, {"count"}, set(), set()),
 }
 _JOIN_SHAPES = {
     "appointments.mine": {
@@ -36,6 +38,7 @@ _JOIN_SHAPES = {
     },
     "appointments.by_status": {("appointments.doctor_id", "doctors.id")},
     "billing.summary": set(),
+    "appointments.cardiology_today": {("appointments.doctor_id", "doctors.id")},
 }
 SENSITIVE_TABLES = {"medical_records", "risk_events", "users"}
 SENSITIVE_COLUMNS = {"date_of_birth", "summary", "amount", "external_subject"}
@@ -66,7 +69,17 @@ _COLUMN_ALLOWLIST = {
     "billing.summary": {
         "billing": {"status", "currency", "created_at", "amount"},
     },
+    "appointments.cardiology_today": {
+        "appointments": {"patient_id", "doctor_id", "scheduled_at", "status"},
+        "doctors": {"id", "specialty"},
+    },
 }
+
+_CARDIOLOGY_TODAY_SQL = """SELECT COUNT(DISTINCT a.patient_id) AS patient_count
+FROM healthcare.appointments AS a
+JOIN healthcare.doctors AS d ON d.id = a.doctor_id
+WHERE d.specialty = 'Cardiology' AND a.status = 'completed'
+AND a.scheduled_at::date = CURRENT_DATE LIMIT 1"""
 
 
 def _reason(code: str, message: str, expected: str | None = None, actual: str | None = None) -> MismatchReason:
@@ -165,6 +178,15 @@ class IntentSqlValidator:
 
         tree = statements[0]
         operation = _operation(tree)
+        if intent.action == "appointments.cardiology_today":
+            expected_tree = sqlglot.parse_one(_CARDIOLOGY_TODAY_SQL, read="postgres")
+            if tree.dump() != expected_tree.dump():
+                add("EXECUTION_TEMPLATE_MISMATCH", "Cardiology-today count must match its fixed, bounded aggregate template")
+            if (intent.operation != "read" or set(intent.tables) != {"appointments", "doctors"}
+                    or set(intent.columns) != {"patient_id"} or set(intent.aggregations) != {"count"}
+                    or intent.filters or intent.group_by or intent.ordering
+                    or intent.scope != "aggregate" or intent.limit != 1):
+                add("INTENT_TEMPLATE_MISMATCH", "Intent does not match the fixed Cardiology-today aggregate")
         if intent.operation == "read" and operation in {"delete", "update", "insert"}:
             add("READ_INTENT_MUTATION", "A read intent produced a data-changing statement", "read", operation)
         elif operation != intent.operation:
@@ -271,7 +293,7 @@ class IntentSqlValidator:
                 add("EXECUTION_TEMPLATE_MISMATCH", "Candidate shape differs from the only executable query template")
 
         try:
-            actual_filters = _filter_predicates(tree.args.get("where").this if tree.args.get("where") else None)
+            actual_filters = [] if intent.action == "appointments.cardiology_today" else _filter_predicates(tree.args.get("where").this if tree.args.get("where") else None)
         except ValueError:
             actual_filters = []
             add("UNSUPPORTED_FILTER", "Only simple supported AND filters are allowed")
@@ -376,7 +398,7 @@ def _required_scope(action: str) -> str:
 def _request_families(text: str) -> set[str]:
     normalized = text.casefold()
     families: set[str] = set()
-    if re.search(r"\b(appointments?|visits?|schedules?)\b", normalized):
+    if re.search(r"\b(appointments?|visits?|visited|schedules?)\b", normalized):
         families.add("appointments")
     if re.search(r"\b(billing|bills?|invoices?|charges?)\b", normalized):
         families.add("billing")

@@ -23,14 +23,14 @@ class SchemaContextRetriever:
     _catalog = {
         "appointments": TableContext("appointments", tuple(ColumnContext(c) for c in (
             "id", "patient_id", "doctor_id", "scheduled_at", "status", "reason_category"
-        )), ("appointments.mine", "appointments.by_status")),
+        )), ("appointments.mine", "appointments.by_status", "appointments.cardiology_today")),
         "patients": TableContext("patients", (
             ColumnContext("id"), ColumnContext("synthetic_patient_number"),
             ColumnContext("date_of_birth", "sensitive"),
         ), ("appointments.mine",)),
         "doctors": TableContext("doctors", tuple(ColumnContext(c) for c in (
             "id", "user_id", "specialty", "active"
-        )), ("appointments.mine", "appointments.by_status")),
+        )), ("appointments.mine", "appointments.by_status", "appointments.cardiology_today")),
         "billing": TableContext("billing", tuple(ColumnContext(c) for c in (
             "id", "patient_id", "appointment_id", "status", "currency", "created_at",
         )) + (ColumnContext("amount", "sensitive"),), ("billing.summary",)),
@@ -69,6 +69,13 @@ class SchemaContextRetriever:
             "supported_filters": [{"column": "created_at", "operator": "gte"}],
             "required_scope": "aggregate",
             "max_limit": 100,
+        },
+        "appointments.cardiology_today": {
+            "description": "Count distinct patients with completed Cardiology appointments scheduled today.",
+            "tables": ["appointments", "doctors"],
+            "projected_columns": ["patient_id"],
+            "aggregations": ["count"], "group_by": [], "ordering": [],
+            "supported_filters": [], "required_scope": "aggregate", "max_limit": 1,
         },
     }
 

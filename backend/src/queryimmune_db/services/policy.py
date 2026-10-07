@@ -31,6 +31,7 @@ class DeterministicPolicyPipeline:
         "appointments.mine": frozenset({"doctor"}),
         "appointments.by_status": frozenset({"analyst", "admin"}),
         "billing.summary": frozenset({"billing", "admin"}),
+        "appointments.cardiology_today": frozenset({"doctor", "analyst", "admin"}),
     }
 
     def __init__(self, result_limit: int = 100, review_limit: int = 25):
@@ -45,11 +46,13 @@ class DeterministicPolicyPipeline:
                 "appointments.mine": ["appointments", "patients", "doctors"],
                 "appointments.by_status": ["appointments", "doctors"],
                 "billing.summary": ["billing"],
+                "appointments.cardiology_today": ["appointments", "doctors"],
             }.get(request.action, []),
             "columns": {
                 "appointments.mine": ["scheduled_at", "status", "reason_category", "synthetic_patient_number", "specialty"],
                 "appointments.by_status": ["status", "specialty", "appointment_count"],
                 "billing.summary": ["status", "currency", "invoice_count", "total_amount"],
+                "appointments.cardiology_today": ["patient_id", "patient_count"],
             }.get(request.action, []),
             "semantic_signature": f"{request.action}:limit={request.limit}:date={'yes' if request.from_date else 'no'}",
             "scope": "own_records" if request.action == "appointments.mine" else "aggregate",

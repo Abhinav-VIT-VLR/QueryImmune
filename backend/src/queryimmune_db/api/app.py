@@ -5,16 +5,20 @@ import uuid
 import logging
 import hashlib
 from dataclasses import replace
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+import psycopg
 
 from queryimmune_db.api.auth import get_current_actor
 from queryimmune_db.api.config import Settings
 from queryimmune_db.api.logging import configure_logging
 from queryimmune_db.api.models import (
     DecisionResponse,
+    DashboardResponse,
     ExecutionRequest,
     HealthResponse,
     NaturalLanguageRequest,
@@ -118,9 +122,11 @@ def execute_natural_language_request(
 ) -> NaturalLanguageResponse:
     request_id = uuid.UUID(request.state.request_id)
     repository = HealthcareRepository()
+    if body.demo_scenario is not None and settings.ai_provider != "demo":
+        raise HTTPException(status_code=400, detail="Demo scenarios require AI_PROVIDER=demo")
     provider_model: str | None = None
     try:
-        provider = configured_provider(settings)
+        provider = configured_provider(settings, demo_scenario=body.demo_scenario)
         if provider is None:
             raise AIProviderError("AI provider is disabled")
         provider_model = provider.model_version
@@ -180,10 +186,30 @@ def execute_natural_language_request(
         intent=intent,
         validation=validation,
         provider_model=analysis.model_version,
+        generated_sql=analysis.candidate_sql,
+        risk_score=result.risk_score,
+        risk_level=result.risk_level,
+        risk_analysis=result.risk_analysis,
         execution_status=result.execution_status,
         row_count=result.row_count,
         results=result.results,
     )
+
+
+@app.get("/api/v1/dashboard", response_model=DashboardResponse, tags=["audit"])
+def dashboard(actor: Actor = Depends(get_current_actor)) -> DashboardResponse:
+    try:
+        data = HealthcareRepository().dashboard(uuid.UUID(actor.user_id))
+    except (psycopg.Error, RuntimeError):
+        # Do not expose connection details or audit contents in database failures.
+        raise HTTPException(status_code=503, detail="Dashboard data is unavailable") from None
+    return DashboardResponse(**data)
+
+
+@app.get("/api/v1/demo/config", tags=["demo"])
+def demo_configuration() -> dict[str, bool]:
+    """Expose whether explicitly configured deterministic fixtures are available."""
+    return {"enabled": settings.ai_provider == "demo"}
 
 
 def _audit_nl_failure(request_id, actor, repository, response, model_version: str | None) -> NaturalLanguageResponse:
@@ -202,4 +228,13 @@ def _audit_nl_failure(request_id, actor, repository, response, model_version: st
         request_id=request_id, decision=result.decision, reason_codes=result.reason_codes,
         message=result.message, provider_model=model_version, execution_status="not_run",
     )
+
+
+WEB_ROOT = Path(__file__).resolve().parents[3] / "web"
+app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def demo_ui() -> FileResponse:
+    return FileResponse(WEB_ROOT / "index.html")
 

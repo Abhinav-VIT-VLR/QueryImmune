@@ -29,8 +29,8 @@ class Settings:
         if not 1 <= review_limit <= result_limit <= 500:
             raise ValueError("require 1 <= QUERYIMMUNE_REVIEW_LIMIT <= QUERYIMMUNE_RESULT_LIMIT <= 500")
         ai_provider = os.getenv("AI_PROVIDER", "disabled").lower()
-        if ai_provider not in {"disabled", "openai-compatible"}:
-            raise ValueError("AI_PROVIDER must be disabled or openai-compatible")
+        if ai_provider not in {"disabled", "openai-compatible", "demo"}:
+            raise ValueError("AI_PROVIDER must be disabled, demo, or openai-compatible")
         ai_timeout = float(os.getenv("AI_TIMEOUT_SECONDS", "20"))
         ai_max_response = int(os.getenv("AI_MAX_RESPONSE_BYTES", "16384"))
         if not 1 <= ai_timeout <= 60 or not 1024 <= ai_max_response <= 131072:

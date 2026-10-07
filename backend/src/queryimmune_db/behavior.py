@@ -81,8 +81,13 @@ class BehaviorAnalyzer:
 
         recent = [e for e in history if _time(e.get("created_at")) and _time(e.get("created_at")) >= now - timedelta(days=7)]
         prior = [e for e in history if _time(e.get("created_at")) and now - timedelta(days=30) <= _time(e.get("created_at")) < now - timedelta(days=7)]
-        # Require adequately sampled windows; compare action distributions to distinguish sustained drift.
         drift, kind = False, "none"
+        if baseline_n >= 10 and signatures and signature.lower() not in signatures and len(recent) >= 5:
+            recent_signatures = [str((e.get("feature_snapshot") or {}).get("semantic_signature", "")).lower() for e in recent]
+            if recent_signatures.count(signature.lower()) / max(1, len(recent_signatures)) >= 0.6:
+                drift, kind = True, "gradual"
+                reasons.append("LEGITIMATE_WORKLOAD_DRIFT")
+        # Require adequately sampled windows; compare action distributions to distinguish sustained drift.
         if len(recent) >= 5 and len(prior) >= 10:
             recent_actions = [str((e.get("feature_snapshot") or {}).get("action", "")) for e in recent]
             prior_actions = [str((e.get("feature_snapshot") or {}).get("action", "")) for e in prior]
@@ -171,7 +176,8 @@ class BehaviorRepository:
             row = conn.execute("""SELECT count(*) FROM security.query_logs q
                 JOIN security.risk_events r USING(request_id) WHERE q.actor_id=%s
                 AND q.decision='allow' AND q.execution_status='succeeded' AND q.created_at >= now()-interval '90 days'
-                AND coalesce(r.feature_snapshot->>'risk_level','')='LOW' AND r.risk_score < 25""", (actor_id,)).fetchone()
+                AND coalesce(r.feature_snapshot->>'risk_level','')='LOW' AND r.risk_score < 25
+                AND coalesce(r.feature_snapshot->'risk_reasons', '[]'::jsonb) <@ '["BASELINE_WARMUP","LEGITIMATE_WORKLOAD_DRIFT"]'::jsonb""", (actor_id,)).fetchone()
         return int(row[0])
 
 
@@ -215,7 +221,7 @@ class ControlledProfileUpdater:
         self.repository = repository or BehaviorRepository()
 
     def observe_success(self, actor_id: str, features: Mapping[str, Any], result_size: int | None = None) -> None:
-        if features.get("risk_level") != "LOW" or set(features.get("risk_reasons") or []) - {"BASELINE_WARMUP"}:
+        if features.get("risk_level") != "LOW" or set(features.get("risk_reasons") or []) - {"BASELINE_WARMUP", "LEGITIMATE_WORKLOAD_DRIFT"}:
             return
         profile, _ = self.repository.load(actor_id)
         version = int((profile or {}).get("profile_version") or 0)

@@ -48,6 +48,12 @@ class ExecutionService:
                 reason_codes=list(decision.reason_codes),
                 message=decision.message,
                 execution_status="not_run",
+                risk_score=decision.risk_score,
+                risk_level=decision.feature_snapshot.get("risk_level") or ("HIGH" if decision.risk_score >= 60 else "MEDIUM" if decision.risk_score >= 25 else "LOW"),
+                risk_analysis={
+                    **{key: decision.feature_snapshot[key] for key in ("behavior", "risk_factors", "risk_reasons", "profile_version") if key in decision.feature_snapshot},
+                    "risk_factors": decision.feature_snapshot.get("risk_factors", {"hard_policy": decision.risk_score}),
+                },
             )
             if status_code == 403 and raise_on_block:
                 # The response carries the audited decision while retaining HTTP authorization semantics.
@@ -85,4 +91,10 @@ class ExecutionService:
             execution_status="succeeded",
             row_count=len(rows),
             results=rows,
+            risk_score=decision.risk_score,
+            risk_level=decision.feature_snapshot.get("risk_level") or ("HIGH" if decision.risk_score >= 60 else "MEDIUM" if decision.risk_score >= 25 else "LOW"),
+            risk_analysis={
+                **{key: decision.feature_snapshot[key] for key in ("behavior", "risk_factors", "risk_reasons", "profile_version") if key in decision.feature_snapshot},
+                "risk_factors": decision.feature_snapshot.get("risk_factors", {"hard_policy": decision.risk_score}),
+            },
         )
