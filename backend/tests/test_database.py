@@ -78,14 +78,19 @@ def test_runtime_cannot_mutate_clinical_tables():
 
     with transaction() as conn:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            conn.execute("UPDATE healthcare.patients SET family_name = family_name WHERE false")
+            with conn.transaction():
+                conn.execute("UPDATE healthcare.patients SET family_name = family_name WHERE false")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            conn.execute("SELECT summary FROM healthcare.medical_records LIMIT 1")
+            with conn.transaction():
+                conn.execute("SELECT summary FROM healthcare.medical_records LIMIT 1")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            conn.execute("SELECT date_of_birth FROM healthcare.patients LIMIT 1")
+            with conn.transaction():
+                conn.execute("SELECT date_of_birth FROM healthcare.patients LIMIT 1")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            conn.execute("SELECT amount FROM healthcare.billing LIMIT 1")
+            with conn.transaction():
+                conn.execute("SELECT amount FROM healthcare.billing LIMIT 1")
         assert conn.execute("SELECT status, currency, invoice_count, total_amount FROM security.billing_summary(NULL, 25)").fetchall()
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            conn.execute("INSERT INTO security.query_logs(actor_id, query_fingerprint, decision, execution_status) SELECT id, repeat('a', 64), 'block', 'not_run' FROM healthcare.users LIMIT 1")
+            with conn.transaction():
+                conn.execute("INSERT INTO security.query_logs(actor_id, query_fingerprint, decision, execution_status) SELECT id, repeat('a', 64), 'block', 'not_run' FROM healthcare.users LIMIT 1")
 

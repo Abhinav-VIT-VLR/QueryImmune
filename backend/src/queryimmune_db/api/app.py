@@ -5,7 +5,6 @@ import uuid
 import logging
 import hashlib
 from dataclasses import replace
-from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -24,6 +23,7 @@ from queryimmune_db.api.models import (
     NaturalLanguageRequest,
     NaturalLanguageResponse,
 )
+from queryimmune_db.paths import project_root
 from queryimmune_db.ai.provider import AIProviderError, configured_provider
 from queryimmune_db.application.nl2sql import (
     FixedDecisionPolicy,
@@ -244,7 +244,7 @@ def _audit_nl_failure(request_id, actor, repository, response, model_version: st
     )
 
 
-WEB_ROOT = Path(__file__).resolve().parents[3] / "web"
+WEB_ROOT = project_root() / "web"
 app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
 
 

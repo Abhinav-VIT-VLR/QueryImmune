@@ -81,7 +81,8 @@ class HealthcareRepository:
             )
             conn.execute(
                 """SELECT security.append_risk_event(
-                       %s, %s, %s, %s, %s, %s, %s, %s, %s
+                       %s, %s, %s::numeric, %s::text, %s::text[], %s::jsonb,
+                       %s::text, %s::text, %s::integer
                    )""",
                 (request_id, actor_id, decision.risk_score, decision.state,
                  list(decision.reason_codes), Jsonb(features), decision.policy_version, decision.model_version,
@@ -109,7 +110,7 @@ class HealthcareRepository:
     def finish_execution(self, request_id: UUID, execution_status: str, duration_ms: int, row_count: int | None) -> None:
         with transaction() as conn:
             conn.execute(
-                "SELECT security.finish_query_log(%s, %s, %s, %s)",
+                "SELECT security.finish_query_log(%s, %s::text, %s::integer, %s::integer)",
                 (request_id, execution_status, duration_ms, row_count),
             )
 

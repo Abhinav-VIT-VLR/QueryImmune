@@ -29,3 +29,35 @@ def test_compose_defines_database_migration_and_api_dependency_chain():
     assert "service_healthy" in compose
     assert "service_completed_successfully" in compose
     assert "DATABASE_RUNTIME_PASSWORD" in compose
+
+
+def test_setup_bootstraps_privilege_roles_before_migrations(monkeypatch):
+    from queryimmune_db import migrate
+
+    calls = []
+    monkeypatch.setattr(migrate, "provision_database_roles", lambda: calls.append("roles"))
+    monkeypatch.setattr(migrate, "apply_migrations", lambda: calls.append("migrations"))
+    monkeypatch.setattr(migrate, "provision_runtime_role", lambda: calls.append("runtime"))
+    monkeypatch.setattr(migrate, "seed", lambda: calls.append("seed"))
+    monkeypatch.setattr(sys, "argv", ["queryimmune_db.migrate", "setup"])
+
+    migrate.main()
+
+    assert calls == ["roles", "migrations", "runtime", "seed"]
+
+
+def test_runtime_login_inherits_the_canonical_privilege_role():
+    from queryimmune_db import migrate
+
+    migrate_source = (REPOSITORY_ROOT / "backend" / "src" / "queryimmune_db" / "migrate.py").read_text(encoding="utf-8")
+    foundation = (REPOSITORY_ROOT / "backend" / "migrations" / "001_database_foundation.sql").read_text(encoding="utf-8")
+    compose = (REPOSITORY_ROOT / "infra" / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert 'DATABASE_ROLES = ("qi_owner", "qi_runtime")' in migrate_source
+    assert 'os.environ.get("DATABASE_RUNTIME_ROLE", "queryimmune_runtime")' in migrate_source
+    assert 'GRANT qi_runtime TO {}' in migrate_source
+    assert "CREATE ROLE qi_runtime NOLOGIN" in foundation
+    assert "DATABASE_URL: postgresql://queryimmune_runtime:" in compose
+    assert migrate.ROOT == REPOSITORY_ROOT / "backend"
+    assert migrate.MIGRATIONS.is_dir()
+    assert (migrate.ROOT / "seed").is_dir()

@@ -168,7 +168,7 @@ class BehaviorRepository:
         from queryimmune_db.connection import transaction
         from psycopg.types.json import Jsonb
         with transaction() as conn:
-            conn.execute("SELECT security.append_behavior_profile(%s,%s,%s,%s,%s,%s,%s)",
+            conn.execute("SELECT security.append_behavior_profile(%s,%s::integer,%s::integer,%s::numeric,%s::timestamptz,%s::timestamptz,%s::jsonb)",
                 (actor_id, expected_version, sample_count, round(min(0.95, sample_count / 30), 2), datetime.now(timezone.utc)-timedelta(days=90),
                  datetime.now(timezone.utc), Jsonb(dict(summary))))
 
