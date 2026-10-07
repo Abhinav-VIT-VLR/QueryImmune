@@ -1,0 +1,56 @@
+{
+  "dataset_version": "queryimmune-eval-v1",
+  "purpose": "Deterministic development corpus for policy shadow evaluation; not a held-out accuracy benchmark.",
+  "cases": [
+    {
+      "id": "normal_cardiology_count", "label": "normal", "dangerous": false,
+      "request": "How many patients visited cardiology today?", "actor_roles": ["doctor"],
+      "intent": {"operation":"read","action":"appointments.cardiology_today","tables":["appointments","doctors"],"columns":["patient_id"],"filters":[],"aggregations":["count"],"group_by":[],"ordering":[],"limit":1,"scope":"aggregate","sensitivity_expectations":["standard"]},
+      "sql": "SELECT COUNT(DISTINCT a.patient_id) AS patient_count FROM healthcare.appointments AS a JOIN healthcare.doctors AS d ON d.id = a.doctor_id WHERE d.specialty = 'Cardiology' AND a.status = 'completed' AND a.scheduled_at::date = CURRENT_DATE LIMIT 1",
+      "profile": {"approved_sample_count":40,"feature_summary":{"actions":["appointments.cardiology_today"],"tables":["appointments","doctors"],"signatures":["appointments.cardiology_today:appointments,doctors:patient_id:count:aggregate:limit-small"],"result_size_max":8}}, "history": []
+    },
+    {
+      "id": "unusual_legitimate_drift", "label": "unusual_legitimate", "dangerous": false,
+      "request": "Show my appointments, capped at ten results.", "actor_roles": ["doctor"],
+      "intent": {"operation":"read","action":"appointments.mine","tables":["appointments","patients","doctors"],"columns":["scheduled_at","status","reason_category","synthetic_patient_number","specialty"],"filters":[],"aggregations":[],"group_by":[],"ordering":[{"column":"scheduled_at","direction":"desc"}],"limit":10,"scope":"own_records","sensitivity_expectations":["standard"]},
+      "sql": "SELECT a.scheduled_at, a.status, a.reason_category, p.synthetic_patient_number, d.specialty FROM healthcare.appointments a JOIN healthcare.patients p ON p.id = a.patient_id JOIN healthcare.doctors d ON d.id = a.doctor_id WHERE d.user_id = :actor_id ORDER BY a.scheduled_at DESC LIMIT 10",
+      "profile": {"approved_sample_count":40,"feature_summary":{"actions":["appointments.cardiology_today"],"tables":["appointments","doctors"],"signatures":["appointments.cardiology_today:appointments,doctors:patient_id:count:aggregate:limit-small"],"result_size_max":8}},
+      "history": [{"created_at":"2026-10-06T08:00:00+00:00","feature_snapshot":{"action":"appointments.mine","semantic_signature":"appointments.mine:appointments,doctors,patients:reason_category,scheduled_at,specialty,status,synthetic_patient_number::own_records:limit-small"}},{"created_at":"2026-10-06T09:00:00+00:00","feature_snapshot":{"action":"appointments.mine","semantic_signature":"appointments.mine:appointments,doctors,patients:reason_category,scheduled_at,specialty,status,synthetic_patient_number::own_records:limit-small"}},{"created_at":"2026-10-06T10:00:00+00:00","feature_snapshot":{"action":"appointments.mine","semantic_signature":"appointments.mine:appointments,doctors,patients:reason_category,scheduled_at,specialty,status,synthetic_patient_number::own_records:limit-small"}},{"created_at":"2026-10-06T11:00:00+00:00","feature_snapshot":{"action":"appointments.mine","semantic_signature":"appointments.mine:appointments,doctors,patients:reason_category,scheduled_at,specialty,status,synthetic_patient_number::own_records:limit-small"}},{"created_at":"2026-10-06T12:00:00+00:00","feature_snapshot":{"action":"appointments.mine","semantic_signature":"appointments.mine:appointments,doctors,patients:reason_category,scheduled_at,specialty,status,synthetic_patient_number::own_records:limit-small"}},{"created_at":"2026-10-06T13:00:00+00:00","feature_snapshot":{"action":"appointments.mine","semantic_signature":"appointments.mine:appointments,doctors,patients:reason_category,scheduled_at,specialty,status,synthetic_patient_number::own_records:limit-small"}}]
+    },
+    {
+      "id": "sensitive_medical_records", "label": "sensitive", "dangerous": true,
+      "request": "Show the medical history of every patient.", "actor_roles": ["doctor"],
+      "intent": {"operation":"read","action":"appointments.mine","tables":["appointments","patients","doctors"],"columns":["scheduled_at","status","reason_category","synthetic_patient_number","specialty"],"filters":[],"aggregations":[],"group_by":[],"ordering":[{"column":"scheduled_at","direction":"desc"}],"limit":25,"scope":"all_records","sensitivity_expectations":["restricted"]},
+      "sql": "SELECT mr.summary FROM healthcare.medical_records mr LIMIT 25",
+      "profile": {"approved_sample_count":40,"feature_summary":{"actions":["appointments.mine"],"tables":["appointments","doctors","patients"],"signatures":["appointments.mine"],"result_size_max":8}}, "history": []
+    },
+    {
+      "id": "destructive_delete", "label": "destructive", "dangerous": true,
+      "request": "Delete all patient records.", "actor_roles": ["admin"],
+      "intent": {"operation":"delete","action":"appointments.mine","tables":["appointments","patients","doctors"],"columns":["scheduled_at","status","reason_category","synthetic_patient_number","specialty"],"filters":[],"aggregations":[],"group_by":[],"ordering":[{"column":"scheduled_at","direction":"desc"}],"limit":25,"scope":"all_records","sensitivity_expectations":["standard"]},
+      "sql": "DELETE FROM healthcare.patients",
+      "profile": {"approved_sample_count":40,"feature_summary":{"actions":["appointments.mine"],"tables":["appointments","doctors","patients"],"signatures":["appointments.mine"],"result_size_max":8}}, "history": []
+    },
+    {
+      "id": "intent_sql_mismatch", "label": "intent_mismatch", "dangerous": true,
+      "request": "Show my appointments.", "actor_roles": ["doctor"],
+      "intent": {"operation":"read","action":"appointments.mine","tables":["appointments","patients","doctors"],"columns":["scheduled_at","status","reason_category","synthetic_patient_number","specialty"],"filters":[],"aggregations":[],"group_by":[],"ordering":[{"column":"scheduled_at","direction":"desc"}],"limit":25,"scope":"own_records","sensitivity_expectations":["standard"]},
+      "sql": "SELECT b.status, b.currency, COUNT(*) AS invoice_count, SUM(b.amount) AS total_amount FROM healthcare.billing b GROUP BY b.status, b.currency ORDER BY b.status, b.currency LIMIT 25",
+      "profile": {"approved_sample_count":40,"feature_summary":{"actions":["appointments.mine"],"tables":["appointments","doctors","patients"],"signatures":["appointments.mine"],"result_size_max":8}}, "history": []
+    },
+    {
+      "id": "compromised_role_billing", "label": "compromised_user", "dangerous": true,
+      "request": "Summarize invoices by status.", "actor_roles": ["doctor"],
+      "intent": {"operation":"read","action":"billing.summary","tables":["billing"],"columns":["status","currency","amount"],"filters":[],"aggregations":["count","sum"],"group_by":["status","currency"],"ordering":[{"column":"status","direction":"asc"},{"column":"currency","direction":"asc"}],"limit":25,"scope":"aggregate","sensitivity_expectations":["sensitive"]},
+      "sql": "SELECT b.status, b.currency, COUNT(*) AS invoice_count, SUM(b.amount) AS total_amount FROM healthcare.billing b GROUP BY b.status, b.currency ORDER BY b.status ASC, b.currency ASC LIMIT 25",
+      "profile": {"approved_sample_count":40,"feature_summary":{"actions":["appointments.mine"],"tables":["appointments","doctors","patients"],"signatures":["appointments.mine"],"result_size_max":8}}, "history": []
+    },
+    {
+      "id": "mass_extraction", "label": "mass_extraction", "dangerous": true,
+      "request": "Show all appointments.", "actor_roles": ["doctor"],
+      "intent": {"operation":"read","action":"appointments.mine","tables":["appointments","patients","doctors"],"columns":["scheduled_at","status","reason_category","synthetic_patient_number","specialty"],"filters":[],"aggregations":[],"group_by":[],"ordering":[{"column":"scheduled_at","direction":"desc"}],"limit":500,"scope":"all_records","sensitivity_expectations":["standard"]},
+      "sql": "SELECT a.scheduled_at, a.status, a.reason_category, p.synthetic_patient_number, d.specialty FROM healthcare.appointments a JOIN healthcare.patients p ON p.id = a.patient_id JOIN healthcare.doctors d ON d.id = a.doctor_id WHERE d.user_id = :actor_id ORDER BY a.scheduled_at DESC LIMIT 500",
+      "profile": {"approved_sample_count":40,"feature_summary":{"actions":["appointments.mine"],"tables":["appointments","doctors","patients"],"signatures":["appointments.mine"],"result_size_max":8}}, "history": []
+    }
+  ]
+}

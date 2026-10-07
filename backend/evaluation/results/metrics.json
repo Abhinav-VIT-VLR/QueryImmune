@@ -1,0 +1,63 @@
+{
+  "dataset_version": "queryimmune-eval-v1",
+  "run_scope": "local deterministic policy shadow; no model, API, PostgreSQL, or executor invocation",
+  "cases": 7,
+  "cases_per_mode": 7,
+  "results_status": "MEASURED_ON_DEVELOPMENT_CORPUS_ONLY",
+  "executor_invoked": false,
+  "held_out_evaluation": "NOT_MEASURED",
+  "full_api_model_postgres_latency_ms_p50": null,
+  "full_api_model_postgres_latency_ms_p95": null,
+  "live_executor_prevention_count": null,
+  "live_executor_prevention_status": "NOT_MEASURED; shadow runner deliberately has no executor",
+  "modes": {
+    "A_plain_nl2sql": {
+      "dangerous_query_detection_rate": 0.0,
+      "false_positive_rate_block_only": 0.0,
+      "safe_review_rate": 0.0,
+      "intent_sql_mismatch_detection_rate": 0.0,
+      "workload_drift_detection_rate": 0.0,
+      "dangerous_candidates_held_before_execution_in_shadow": 0,
+      "shadow_policy_latency_ms_p50": 0.0019,
+      "shadow_policy_latency_ms_p95": 0.007,
+      "added_end_to_end_latency_ms": null,
+      "shadow_policy_latency_ms_delta_vs_plain": 0.0
+    },
+    "B_static_rules": {
+      "dangerous_query_detection_rate": 1.0,
+      "false_positive_rate_block_only": 0.0,
+      "safe_review_rate": 0.0,
+      "intent_sql_mismatch_detection_rate": 1.0,
+      "workload_drift_detection_rate": 0.0,
+      "dangerous_candidates_held_before_execution_in_shadow": 5,
+      "shadow_policy_latency_ms_p50": 1.4917,
+      "shadow_policy_latency_ms_p95": 11.3536,
+      "added_end_to_end_latency_ms": null,
+      "shadow_policy_latency_ms_delta_vs_plain": 1.4898
+    },
+    "C_anomaly_detection": {
+      "dangerous_query_detection_rate": 1.0,
+      "false_positive_rate_block_only": 0.5,
+      "safe_review_rate": 0.0,
+      "intent_sql_mismatch_detection_rate": 1.0,
+      "workload_drift_detection_rate": 0.0,
+      "dangerous_candidates_held_before_execution_in_shadow": 5,
+      "shadow_policy_latency_ms_p50": 1.5451,
+      "shadow_policy_latency_ms_p95": 2.4944,
+      "added_end_to_end_latency_ms": null,
+      "shadow_policy_latency_ms_delta_vs_plain": 1.5432
+    },
+    "D_queryimmune": {
+      "dangerous_query_detection_rate": 1.0,
+      "false_positive_rate_block_only": 0.0,
+      "safe_review_rate": 0.5,
+      "intent_sql_mismatch_detection_rate": 1.0,
+      "workload_drift_detection_rate": 1.0,
+      "dangerous_candidates_held_before_execution_in_shadow": 5,
+      "shadow_policy_latency_ms_p50": 1.4007,
+      "shadow_policy_latency_ms_p95": 1.9646,
+      "added_end_to_end_latency_ms": null,
+      "shadow_policy_latency_ms_delta_vs_plain": 1.3988
+    }
+  }
+}

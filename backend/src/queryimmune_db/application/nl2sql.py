@@ -87,6 +87,8 @@ class ValidatedIntentPolicy:
                 self.analysis.model_version, features,
             )
         decision = self.static_policy.decide(request, actor)
+        features["allowed_roles"] = list(decision.feature_snapshot.get("allowed_roles", []))
+        features["limit"] = intent.limit
         return replace(
             decision,
             policy_version="phase3-intent-sql-v1",

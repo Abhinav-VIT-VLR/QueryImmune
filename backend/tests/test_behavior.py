@@ -69,6 +69,27 @@ def test_sustained_workload_change_is_detected_as_gradual_drift():
     assert result.state != "block"
 
 
+def test_empty_summary_on_mature_profile_is_safe_during_drift_check():
+    result = BehaviorAnalyzer().analyze({"action": "appointments.mine"},
+        {"approved_sample_count": 20, "feature_summary": {}}, [], NOW)
+    assert result.similarity is None
+    assert "BASELINE_WARMUP" in result.reasons
+
+
+def test_behavior_risk_keeps_authorized_role_context():
+    from queryimmune_db.application.nl2sql import NL2SQLAnalysis, ValidatedIntentPolicy
+    from queryimmune_db.ai.intent import QueryIntent, ValidationResult
+    from queryimmune_db.domain.identity import Actor
+    intent = QueryIntent(operation="read", action="appointments.cardiology_today",
+        tables=["appointments", "doctors"], columns=["patient_id"], filters=[], aggregations=["count"],
+        group_by=[], ordering=[], limit=1, scope="aggregate", sensitivity_expectations=["standard"])
+    analysis = NL2SQLAnalysis(intent, ValidationResult(valid=True, reasons=[]), "test", "fingerprint", "")
+    decision = ValidatedIntentPolicy(analysis, 100, 25).decide(ExecutionRequest(action=intent.action, limit=1),
+        Actor("user", "subject", "Doctor", frozenset({"doctor"})))
+    assert decision.state == "allow"
+    assert decision.feature_snapshot["allowed_roles"] == ["admin", "analyst", "doctor"]
+
+
 def test_profile_updater_rejects_poisoning_inputs_and_requires_sample_gate():
     class Repository:
         def __init__(self): self.writes = []
@@ -80,6 +101,19 @@ def test_profile_updater_rejects_poisoning_inputs_and_requires_sample_gate():
     updater.observe_success("actor", {"risk_level": "HIGH", "risk_reasons": [], "action": "billing.summary"})
     updater.observe_success("actor", {"risk_level": "LOW", "risk_reasons": ["UNSEEN_ACTION_PATTERN"], "action": "billing.summary"})
     updater.observe_success("actor", {"risk_level": "LOW", "risk_reasons": ["BASELINE_WARMUP"], "action": "appointments.mine"})
+    assert repo.writes == []
+
+
+def test_profile_updater_rejects_impossible_result_size_poisoning():
+    class Repository:
+        def __init__(self): self.writes = []
+        def load(self, actor_id): return None, []
+        def eligible_sample_count(self, actor_id): return 10
+        def append_profile(self, *args): self.writes.append(args)
+    repo = Repository()
+    updater = ControlledProfileUpdater(repo)
+    features = {"risk_level": "LOW", "risk_reasons": ["BASELINE_WARMUP"], "action": "appointments.mine"}
+    updater.observe_success("actor", features, result_size=101)
     assert repo.writes == []
 
 

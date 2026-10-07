@@ -38,6 +38,22 @@ def test_execution_migrations_limit_runtime_access():
     assert "healthcare.medical_records" not in narrow
 
 
+def test_profile_learning_migration_bounds_observed_statistics():
+    migration = (ROOT / "migrations" / "007_harden_profile_statistics.sql").read_text(encoding="utf-8").lower()
+    assert "v_observed_max" in migration
+    assert "statistics exceed observed bounds" in migration
+    assert "90 days" in migration
+    assert "one-time repair" in migration
+
+
+def test_runtime_grants_hide_patient_demographics_and_raw_billing_rows():
+    migration = (ROOT / "migrations" / "008_minimize_runtime_data_access.sql").read_text(encoding="utf-8").lower()
+    assert "grant select (id, synthetic_patient_number) on healthcare.patients" in migration
+    assert "security.billing_summary" in migration
+    assert "revoke select on healthcare.users" in migration
+    assert "billing_created_at_idx on healthcare.billing(created_at)" in migration
+
+
 @pytest.mark.database
 def test_live_database_constraints_indexes_seed_and_readonly_transaction() -> None:
     if not os.environ.get("DATABASE_URL"):
@@ -65,6 +81,11 @@ def test_runtime_cannot_mutate_clinical_tables():
             conn.execute("UPDATE healthcare.patients SET family_name = family_name WHERE false")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             conn.execute("SELECT summary FROM healthcare.medical_records LIMIT 1")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("SELECT date_of_birth FROM healthcare.patients LIMIT 1")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("SELECT amount FROM healthcare.billing LIMIT 1")
+        assert conn.execute("SELECT status, currency, invoice_count, total_amount FROM security.billing_summary(NULL, 25)").fetchall()
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             conn.execute("INSERT INTO security.query_logs(actor_id, query_fingerprint, decision, execution_status) SELECT id, repeat('a', 64), 'block', 'not_run' FROM healthcare.users LIMIT 1")
 

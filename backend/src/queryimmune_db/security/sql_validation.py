@@ -5,7 +5,7 @@ import re
 
 import sqlglot
 from sqlglot import exp
-from sqlglot.errors import ParseError
+from sqlglot.errors import SqlglotError
 
 from queryimmune_db.ai.intent import IntentFilter, MismatchReason, QueryIntent, SQLAnalysis, ValidationResult
 from queryimmune_db.ai.privacy import redact_direct_identifiers
@@ -171,7 +171,7 @@ class IntentSqlValidator:
             return ValidationResult(valid=False, reasons=[_reason("MALFORMED_SQL", "SQL candidate is empty or exceeds the size limit")])
         try:
             statements = sqlglot.parse(candidate_sql, read="postgres")
-        except ParseError:
+        except SqlglotError:
             return ValidationResult(valid=False, reasons=[_reason("MALFORMED_SQL", "SQL candidate could not be parsed as PostgreSQL")])
         if len(statements) != 1 or statements[0] is None:
             return ValidationResult(valid=False, reasons=[_reason("MULTIPLE_STATEMENTS", "Exactly one SQL statement is required")])
@@ -180,7 +180,9 @@ class IntentSqlValidator:
         operation = _operation(tree)
         if intent.action == "appointments.cardiology_today":
             expected_tree = sqlglot.parse_one(_CARDIOLOGY_TODAY_SQL, read="postgres")
-            if tree.dump() != expected_tree.dump():
+            # sqlglot's dump contains source-position metadata, so comparing dumps
+            # rejects identical SQL parsed from differently formatted strings.
+            if tree != expected_tree:
                 add("EXECUTION_TEMPLATE_MISMATCH", "Cardiology-today count must match its fixed, bounded aggregate template")
             if (intent.operation != "read" or set(intent.tables) != {"appointments", "doctors"}
                     or set(intent.columns) != {"patient_id"} or set(intent.aggregations) != {"count"}

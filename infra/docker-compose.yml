@@ -1,11 +1,10 @@
 services:
   postgres:
-    image: postgres:18-alpine
-    env_file:
-      - ../backend/.env
+    image: postgres:16-alpine
     environment:
       POSTGRES_DB: queryimmune
       POSTGRES_USER: queryimmune_bootstrap
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python scripts/create_env.py first}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -16,6 +15,50 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_ADMIN_URL: postgresql://queryimmune_bootstrap:${POSTGRES_PASSWORD}@postgres:5432/queryimmune
+      DATABASE_RUNTIME_PASSWORD: ${DATABASE_RUNTIME_PASSWORD:?Run python scripts/create_env.py first}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["python", "-m", "queryimmune_db.migrate", "setup"]
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://queryimmune_runtime:${DATABASE_RUNTIME_PASSWORD}@postgres:5432/queryimmune
+      AUTH_JWT_HS256_SECRET: ${AUTH_JWT_HS256_SECRET:?Run python scripts/create_env.py first}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-queryimmune-auth}
+      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-queryimmune-api}
+      QUERYIMMUNE_DEMO_AUTH: "1"
+      QUERYIMMUNE_RESULT_LIMIT: ${QUERYIMMUNE_RESULT_LIMIT:-100}
+      QUERYIMMUNE_REVIEW_LIMIT: ${QUERYIMMUNE_REVIEW_LIMIT:-25}
+      AI_PROVIDER: ${AI_PROVIDER:-demo}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-20}
+      AI_MAX_RESPONSE_BYTES: ${AI_MAX_RESPONSE_BYTES:-16384}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 8
+      start_period: 10s
 
 volumes:
   queryimmune_pgdata:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 from dataclasses import replace
 from uuid import UUID
 
@@ -105,6 +106,11 @@ def test_sql_is_not_an_accepted_request_field():
         ExecutionRequest.model_validate({"action": "appointments.mine", "sql": "SELECT 1"})
 
 
+def test_client_cannot_assign_or_escalate_its_role():
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({"action": "billing.summary", "roles": ["admin"]})
+
+
 def test_health_and_openapi_endpoints():
     with TestClient(app) as client:
         assert client.get("/health/live").json() == {"status": "ok"}
@@ -129,6 +135,37 @@ def test_execution_route_requires_authentication_and_returns_request_id():
         response = client.post("/api/v1/requests", json={"action": "appointments.mine"})
     assert response.status_code == 401
     assert UUID(response.headers["x-request-id"])
+
+
+def test_unhandled_errors_return_generic_message_with_request_id():
+    from starlette.requests import Request
+    from queryimmune_db.api.app import unhandled_error_handler
+    scope = {"type": "http", "method": "GET", "path": "/", "headers": [],
+             "query_string": b"", "server": ("test", 80), "client": ("test", 1), "scheme": "http"}
+    request = Request(scope)
+    request.state.request_id = "request-test-id"
+    response = asyncio.run(unhandled_error_handler(request, RuntimeError("private SQL and secret")))
+    payload = __import__("json").loads(response.body)
+    assert response.status_code == 500
+    assert payload["request_id"] == "request-test-id"
+    assert "private SQL" not in response.body.decode()
+
+
+def test_demo_token_issuer_is_local_opt_in_and_uses_existing_verifier(monkeypatch, capsys):
+    from queryimmune_db.api.config import Settings
+    from queryimmune_db.api.auth import Hs256Authenticator
+    from queryimmune_db.api.dev_token import main
+    monkeypatch.setenv("QUERYIMMUNE_DEMO_AUTH", "1")
+    monkeypatch.setenv("AI_PROVIDER", "demo")
+    monkeypatch.setenv("AUTH_JWT_HS256_SECRET", "a" * 64)
+    monkeypatch.setenv("AUTH_JWT_ISSUER", "queryimmune-auth")
+    monkeypatch.setenv("AUTH_JWT_AUDIENCE", "queryimmune-api")
+    main()
+    token = capsys.readouterr().out.strip()
+    assert Hs256Authenticator(Settings.from_env()).subject_from_token(token) == "demo:dr-ada"
+    monkeypatch.setenv("QUERYIMMUNE_DEMO_AUTH", "0")
+    with pytest.raises(SystemExit):
+        main()
 
 
 @pytest.mark.database

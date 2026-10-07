@@ -37,10 +37,8 @@ class HealthcareRepository:
             ORDER BY appointment_count DESC LIMIT %s
         """,
         "billing.summary": """
-            SELECT status, currency, count(*) AS invoice_count, sum(amount) AS total_amount
-            FROM healthcare.billing
-            WHERE (%s::date IS NULL OR created_at::date >= %s::date)
-            GROUP BY status, currency ORDER BY status, currency LIMIT %s
+            SELECT status, currency, invoice_count, total_amount
+            FROM security.billing_summary(%s::date, %s::integer)
         """,
         "appointments.cardiology_today": """
             SELECT count(DISTINCT a.patient_id) AS patient_count
@@ -98,6 +96,8 @@ class HealthcareRepository:
             params = (actor_id, from_date, from_date, limit)
         elif action == "appointments.cardiology_today":
             params = (limit,)
+        elif action == "billing.summary":
+            params = (from_date, limit)
         else:
             params = (from_date, from_date, limit)
         with transaction(read_only=True) as conn:

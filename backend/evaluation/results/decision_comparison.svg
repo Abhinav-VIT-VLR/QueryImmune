@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="326">
+<rect width="100%" height="100%" fill="#0b1220"/>
+<text x="24" y="28" fill="#e5eefb" font-family="sans-serif" font-size="16">Decision counts by mode (development corpus)</text>
+<text x="20" y="71" fill="#cbd5e1" font-family="sans-serif" font-size="11">A_plain_nl2sql</text>
+<rect x="240" y="55" width="168" height="22" fill="#45d6b5"/><text x="244" y="70" fill="#0b1220" font-size="11">ALLOW 7</text>
+<rect x="414" y="55" width="0" height="22" fill="#f5bd5b"/><text x="418" y="70" fill="#0b1220" font-size="11">REVIEW 0</text>
+<rect x="420" y="55" width="0" height="22" fill="#ff6685"/><text x="424" y="70" fill="#0b1220" font-size="11">BLOCK 0</text>
+<text x="20" y="105" fill="#cbd5e1" font-family="sans-serif" font-size="11">B_static_rules</text>
+<rect x="240" y="89" width="48" height="22" fill="#45d6b5"/><text x="244" y="104" fill="#0b1220" font-size="11">ALLOW 2</text>
+<rect x="294" y="89" width="0" height="22" fill="#f5bd5b"/><text x="298" y="104" fill="#0b1220" font-size="11">REVIEW 0</text>
+<rect x="300" y="89" width="120" height="22" fill="#ff6685"/><text x="304" y="104" fill="#0b1220" font-size="11">BLOCK 5</text>
+<text x="20" y="139" fill="#cbd5e1" font-family="sans-serif" font-size="11">C_anomaly_detection</text>
+<rect x="240" y="123" width="24" height="22" fill="#45d6b5"/><text x="244" y="138" fill="#0b1220" font-size="11">ALLOW 1</text>
+<rect x="270" y="123" width="0" height="22" fill="#f5bd5b"/><text x="274" y="138" fill="#0b1220" font-size="11">REVIEW 0</text>
+<rect x="276" y="123" width="144" height="22" fill="#ff6685"/><text x="280" y="138" fill="#0b1220" font-size="11">BLOCK 6</text>
+<text x="20" y="173" fill="#cbd5e1" font-family="sans-serif" font-size="11">D_queryimmune</text>
+<rect x="240" y="157" width="24" height="22" fill="#45d6b5"/><text x="244" y="172" fill="#0b1220" font-size="11">ALLOW 1</text>
+<rect x="270" y="157" width="24" height="22" fill="#f5bd5b"/><text x="274" y="172" fill="#0b1220" font-size="11">REVIEW 1</text>
+<rect x="300" y="157" width="120" height="22" fill="#ff6685"/><text x="304" y="172" fill="#0b1220" font-size="11">BLOCK 5</text>
+</svg>

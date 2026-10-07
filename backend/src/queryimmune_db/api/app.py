@@ -89,6 +89,20 @@ async def http_error_handler(request: Request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
 
 
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    # Keep unexpected failures useful to correlate, without returning exception,
+    # SQL, provider, or connection details to the caller.
+    logger.error("unhandled request failure", extra={
+        "request_id": getattr(request.state, "request_id", None),
+        "error_type": type(exc).__name__,
+    })
+    return JSONResponse(status_code=500, content={
+        "error": {"code": "INTERNAL_ERROR", "message": "The request could not be completed"},
+        "request_id": getattr(request.state, "request_id", None),
+    })
+
+
 @app.get("/health/live", response_model=HealthResponse, tags=["health"])
 def liveness() -> HealthResponse:
     return HealthResponse(status="ok")

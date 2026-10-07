@@ -40,13 +40,15 @@ class BehaviorAnalyzer:
         current_columns = _set(features.get("columns") or features.get("intent_columns"))
         signature = str(features.get("semantic_signature") or current_action)
         reasons: list[str] = []
+        # Drift logic below also consults the learned signatures during warm-up.
+        # Profiles with a sample count but no summary must remain a valid state.
+        signatures = _set(summary.get("signatures"))
         if baseline_n < 10 or not summary:
             reasons.append("BASELINE_WARMUP")
             deviation, similarity = 0.0, None
         else:
             actions = _set(summary.get("actions"))
             tables = _set(summary.get("tables"))
-            signatures = _set(summary.get("signatures"))
             # Jaccard feature similarity is intentionally interpretable and bounded.
             parts = [1.0 if current_action in actions else 0.0]
             if tables:
@@ -167,7 +169,7 @@ class BehaviorRepository:
         from psycopg.types.json import Jsonb
         with transaction() as conn:
             conn.execute("SELECT security.append_behavior_profile(%s,%s,%s,%s,%s,%s,%s)",
-                (actor_id, expected_version, sample_count, 0.5, datetime.now(timezone.utc)-timedelta(days=90),
+                (actor_id, expected_version, sample_count, round(min(0.95, sample_count / 30), 2), datetime.now(timezone.utc)-timedelta(days=90),
                  datetime.now(timezone.utc), Jsonb(dict(summary))))
 
     def eligible_sample_count(self, actor_id: str) -> int:
@@ -222,6 +224,11 @@ class ControlledProfileUpdater:
 
     def observe_success(self, actor_id: str, features: Mapping[str, Any], result_size: int | None = None) -> None:
         if features.get("risk_level") != "LOW" or set(features.get("risk_reasons") or []) - {"BASELINE_WARMUP", "LEGITIMATE_WORKLOAD_DRIFT"}:
+            return
+        # Gateway results are capped at 100 rows. Refuse impossible/out-of-policy
+        # values here as defense in depth; the database function independently
+        # checks the value against audited successful query_logs.
+        if result_size is not None and (not isinstance(result_size, int) or result_size < 0 or result_size > 100):
             return
         profile, _ = self.repository.load(actor_id)
         version = int((profile or {}).get("profile_version") or 0)
