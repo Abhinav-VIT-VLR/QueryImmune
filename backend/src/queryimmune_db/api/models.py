@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from queryimmune_db.ai.intent import QueryIntent, ValidationResult
+
 
 class ExecutionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -15,11 +17,30 @@ class ExecutionRequest(BaseModel):
     from_date: date | None = None
 
 
+class NaturalLanguageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    request: str = Field(min_length=3, max_length=2000)
+
+
 class DecisionResponse(BaseModel):
     request_id: UUID
     decision: Literal["allow", "review", "block"]
     reason_codes: list[str]
     message: str
+    execution_status: Literal["not_run", "succeeded", "failed"]
+    row_count: int | None = None
+    results: list[dict[str, object]] | None = None
+
+
+class NaturalLanguageResponse(BaseModel):
+    request_id: UUID
+    decision: Literal["allow", "review", "block"]
+    reason_codes: list[str]
+    message: str
+    intent: QueryIntent | None = None
+    validation: ValidationResult | None = None
+    provider_model: str | None = None
     execution_status: Literal["not_run", "succeeded", "failed"]
     row_count: int | None = None
     results: list[dict[str, object]] | None = None

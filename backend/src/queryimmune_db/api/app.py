@@ -3,20 +3,36 @@ from __future__ import annotations
 import time
 import uuid
 import logging
+import hashlib
+from dataclasses import replace
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from queryimmune_db.api.auth import get_current_actor
 from queryimmune_db.api.config import Settings
 from queryimmune_db.api.logging import configure_logging
-from queryimmune_db.api.models import DecisionResponse, ExecutionRequest, HealthResponse
+from queryimmune_db.api.models import (
+    DecisionResponse,
+    ExecutionRequest,
+    HealthResponse,
+    NaturalLanguageRequest,
+    NaturalLanguageResponse,
+)
+from queryimmune_db.ai.provider import AIProviderError, configured_provider
+from queryimmune_db.application.nl2sql import (
+    FixedDecisionPolicy,
+    NL2SQLPipeline,
+    ValidatedIntentPolicy,
+    execution_request,
+)
 from queryimmune_db.connection import database_health
+from queryimmune_db.behavior import BehaviorAwarePipeline, ControlledProfileUpdater
 from queryimmune_db.domain.identity import Actor
 from queryimmune_db.repositories.healthcare import HealthcareRepository
 from queryimmune_db.services.execution import ExecutionService
-from queryimmune_db.services.policy import DeterministicPolicyPipeline
+from queryimmune_db.services.policy import Decision, DeterministicPolicyPipeline
 
 settings = Settings.from_env()
 configure_logging(settings.log_level)
@@ -87,7 +103,103 @@ def execute_request(
 ) -> DecisionResponse:
     service = ExecutionService(
         repository=HealthcareRepository(),
-        pipeline=DeterministicPolicyPipeline(settings.result_limit, settings.review_limit),
+        pipeline=BehaviorAwarePipeline(DeterministicPolicyPipeline(settings.result_limit, settings.review_limit)),
+        profile_updater=ControlledProfileUpdater(),
     )
     return service.handle(uuid.UUID(request.state.request_id), body, actor)
+
+
+@app.post("/api/v1/nl-requests", response_model=NaturalLanguageResponse, tags=["execution"])
+def execute_natural_language_request(
+    body: NaturalLanguageRequest,
+    request: Request,
+    response: Response,
+    actor: Actor = Depends(get_current_actor),
+) -> NaturalLanguageResponse:
+    request_id = uuid.UUID(request.state.request_id)
+    repository = HealthcareRepository()
+    provider_model: str | None = None
+    try:
+        provider = configured_provider(settings)
+        if provider is None:
+            raise AIProviderError("AI provider is disabled")
+        provider_model = provider.model_version
+        pipeline = NL2SQLPipeline(provider)
+        intent, schema_context = pipeline.extract_intent(body.request)
+    except AIProviderError:
+        return _audit_nl_failure(request_id, actor, repository, response, provider_model)
+
+    intent_request = ExecutionRequest(action=intent.action, limit=intent.limit)
+    preliminary = DeterministicPolicyPipeline(settings.result_limit, settings.review_limit).decide(intent_request, actor)
+    if preliminary.state != "allow":
+        decision = replace(
+            preliminary,
+            policy_version="phase3-intent-sql-v1",
+            model_version=provider_model,
+            feature_snapshot={"intent_action": intent.action, "intent_operation": intent.operation, "sql_generated": False},
+        )
+        result = ExecutionService(repository, FixedDecisionPolicy(decision)).handle(
+            request_id, intent_request, actor,
+            query_fingerprint=hashlib.sha256(b"PRE_SQL_POLICY_BLOCK").hexdigest(),
+            raise_on_block=False,
+        )
+        response.status_code = 202 if result.decision == "review" else 403
+        return NaturalLanguageResponse(
+            request_id=request_id, decision=result.decision, reason_codes=result.reason_codes,
+            message=result.message, intent=intent, provider_model=provider_model,
+            execution_status="not_run",
+        )
+
+    try:
+        analysis = pipeline.generate_and_validate(body.request, intent, schema_context)
+    except AIProviderError:
+        return _audit_nl_failure(request_id, actor, repository, response, provider_model)
+
+    validation = analysis.validation
+    if validation.valid:
+        gateway_request = execution_request(intent)
+    else:
+        # Preserve a typed placeholder request; the validation pipeline hard-blocks it before execution.
+        gateway_request = ExecutionRequest(action=intent.action, limit=intent.limit)
+    gateway = ExecutionService(
+        repository,
+        BehaviorAwarePipeline(ValidatedIntentPolicy(analysis, settings.result_limit, settings.review_limit)),
+        profile_updater=ControlledProfileUpdater(),
+    )
+    result = gateway.handle(
+        request_id, gateway_request, actor,
+        query_fingerprint=analysis.candidate_fingerprint,
+        raise_on_block=False,
+    )
+    response.status_code = 403 if result.decision == "block" else 202 if result.decision == "review" else 200
+    return NaturalLanguageResponse(
+        request_id=request_id,
+        decision=result.decision,
+        reason_codes=result.reason_codes,
+        message=result.message,
+        intent=intent,
+        validation=validation,
+        provider_model=analysis.model_version,
+        execution_status=result.execution_status,
+        row_count=result.row_count,
+        results=result.results,
+    )
+
+
+def _audit_nl_failure(request_id, actor, repository, response, model_version: str | None) -> NaturalLanguageResponse:
+    decision = Decision(
+        "block", ("AI_PROVIDER_UNAVAILABLE",), 100.0,
+        "Natural-language processing is unavailable", "phase3-intent-sql-v1",
+        model_version, {"validated": False, "mismatch_codes": ["AI_PROVIDER_UNAVAILABLE"]},
+    )
+    gateway = ExecutionService(repository, FixedDecisionPolicy(decision))
+    result = gateway.handle(
+        request_id, ExecutionRequest(action="ai.unavailable", limit=25), actor,
+        query_fingerprint=hashlib.sha256(b"NO_SQL_CANDIDATE").hexdigest(), raise_on_block=False,
+    )
+    response.status_code = 503
+    return NaturalLanguageResponse(
+        request_id=request_id, decision=result.decision, reason_codes=result.reason_codes,
+        message=result.message, provider_model=model_version, execution_status="not_run",
+    )
 

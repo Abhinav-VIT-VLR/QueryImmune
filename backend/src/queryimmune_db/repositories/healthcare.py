@@ -60,9 +60,13 @@ class HealthcareRepository:
             return None
         return Actor(user_id=row[0], subject=row[1], display_name=row[2], roles=frozenset(row[4]))
 
-    def write_decision(self, request_id: UUID, actor_id: UUID, decision: Decision, action: str, limit: int) -> None:
+    def write_decision(
+        self, request_id: UUID, actor_id: UUID, decision: Decision, action: str, limit: int,
+        *, query_fingerprint: str | None = None,
+    ) -> None:
         query = self._queries.get(action, "UNSUPPORTED_ACTION")
-        fingerprint = hashlib.sha256(query.encode("utf-8")).hexdigest()
+        fingerprint = query_fingerprint or hashlib.sha256(query.encode("utf-8")).hexdigest()
+        features = {"action": action, "limit": limit, **decision.feature_snapshot}
         with transaction() as conn:
             conn.execute(
                 "SELECT security.append_query_log(%s, %s, %s, %s, 'not_run', NULL, NULL)",
@@ -70,10 +74,11 @@ class HealthcareRepository:
             )
             conn.execute(
                 """SELECT security.append_risk_event(
-                       %s, %s, %s, %s, %s, %s, 'phase2-static-v1', NULL, NULL
+                       %s, %s, %s, %s, %s, %s, %s, %s, %s
                    )""",
                 (request_id, actor_id, decision.risk_score, decision.state,
-                 list(decision.reason_codes), Jsonb({"action": action, "limit": limit})),
+                 list(decision.reason_codes), Jsonb(features), decision.policy_version, decision.model_version,
+                 decision.profile_version),
             )
 
     def execute_action(self, action: str, actor_id: UUID, limit: int, from_date: date | None) -> list[dict[str, Any]]:

@@ -16,14 +16,26 @@ logger = logging.getLogger(__name__)
 
 
 class ExecutionService:
-    def __init__(self, repository: HealthcareRepository, pipeline: RequestPipeline):
+    def __init__(self, repository: HealthcareRepository, pipeline: RequestPipeline, profile_updater=None):
         self.repository = repository
         self.pipeline = pipeline
+        self.profile_updater = profile_updater
 
-    def handle(self, request_id: UUID, request: ExecutionRequest, actor: Actor) -> DecisionResponse:
+    def handle(
+        self,
+        request_id: UUID,
+        request: ExecutionRequest,
+        actor: Actor,
+        *,
+        query_fingerprint: str | None = None,
+        raise_on_block: bool = True,
+    ) -> DecisionResponse:
         decision = self.pipeline.decide(request, actor)
         try:
-            self.repository.write_decision(request_id, UUID(actor.user_id), decision, request.action, request.limit)
+            self.repository.write_decision(
+                request_id, UUID(actor.user_id), decision, request.action, request.limit,
+                query_fingerprint=query_fingerprint,
+            )
         except (psycopg.Error, RuntimeError):
             logger.error("failed to persist security decision", extra={"request_id": str(request_id), "error_type": "database"})
             raise HTTPException(status_code=503, detail="Security decision could not be recorded") from None
@@ -37,7 +49,7 @@ class ExecutionService:
                 message=decision.message,
                 execution_status="not_run",
             )
-            if status_code == 403:
+            if status_code == 403 and raise_on_block:
                 # The response carries the audited decision while retaining HTTP authorization semantics.
                 raise HTTPException(status_code=403, detail=response.model_dump(mode="json"))
             return response
@@ -59,6 +71,12 @@ class ExecutionService:
         except psycopg.Error:
             logger.error("failed to finalize query audit", extra={"request_id": str(request_id), "error_type": "database"})
             raise HTTPException(status_code=503, detail="Execution audit could not be completed") from None
+        if self.profile_updater is not None:
+            try:
+                self.profile_updater.observe_success(actor.user_id, decision.feature_snapshot, len(rows))
+            except (psycopg.Error, RuntimeError, ValueError):
+                # Profile maintenance is isolated from successful query execution and remains fail closed.
+                logger.warning("behavior profile update deferred", extra={"request_id": str(request_id), "error_type": "profile_update"})
         return DecisionResponse(
             request_id=request_id,
             decision="allow",
