@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -150,6 +152,36 @@ class HealthcareRepository:
             rows = cursor.fetchall()
             columns = [column.name for column in cursor.description or ()]
         return [{name: _json_value(value) for name, value in zip(columns, row)} for row in rows]
+
+    def execute_general_select(
+        self, validated_sql: str, actor_context_id: UUID, *, actor_scoped: bool,
+    ) -> list[dict[str, Any]]:
+        """Execute SQLGlot-canonical SQL only after the separate general validator passed."""
+        if not validated_sql or len(validated_sql.encode("utf-8")) > 16_384:
+            raise ValueError("validated query size is invalid")
+        statement = validated_sql
+        if actor_scoped:
+            if statement.lower().count("%(actor_id)s") != 1:
+                raise ValueError("actor scope placeholder is invalid")
+            parameters = {"actor_id": actor_context_id}
+        else:
+            if re.search(r"%\(\w+\)s|:\w+\b", statement):
+                raise ValueError("unexpected query parameter")
+            parameters = ()
+        with transaction(
+            read_only=True,
+            actor_context_id=actor_context_id,
+            allow_shared_healthcare_read=not actor_scoped,
+        ) as conn:
+            cursor = conn.execute(statement, parameters)
+            rows = cursor.fetchmany(101)
+            if len(rows) > 100:
+                raise ValueError("general query exceeded its row limit")
+            columns = [column.name for column in cursor.description or ()]
+        result = [{name: _json_value(value) for name, value in zip(columns, row)} for row in rows]
+        if len(json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > 1_048_576:
+            raise ValueError("general query exceeded its response byte limit")
+        return result
 
     def finish_execution(self, request_id: UUID, execution_status: str, duration_ms: int, row_count: int | None) -> None:
         with transaction() as conn:

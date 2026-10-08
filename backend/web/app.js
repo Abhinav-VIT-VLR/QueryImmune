@@ -5,6 +5,7 @@
   const token = () => sessionStorage.getItem(tokenKey) || '';
   let demoMode = false;
   let selectedScenario = null;
+  let selectedScenarioPrompt = null;
   let demoConfigurationReady = Promise.resolve();
   let toastTimer;
 
@@ -18,28 +19,46 @@
     if (options.body) headers['Content-Type'] = 'application/json';
     let response;
     try { response = await fetch(path, { ...options, headers }); }
-    catch { throw new Error('Request failed. Check your connection and try again.'); }
-    return parseApiResponse(path, response);
+    catch { throw apiError('Request failed. Check your connection and try again.', { path, method: options.method || 'GET', status: null }); }
+    return parseApiResponse(path, response, options.method || 'GET');
   }
-  async function parseApiResponse(path, response) {
+  async function parseApiResponse(path, response, method) {
     // Read the body before interpreting the status: BLOCK and REVIEW are valid
     // security decisions even though their HTTP statuses are not 2xx success.
-    const body = await response.json().catch(() => null);
-    const decisionBody = path === '/api/v1/nl-requests' ? structuredDecisionForStatus(body, response.status) : null;
+    const body = await readApiResponseBody(response);
+    const decisionBody = path === '/api/v1/nl-requests' ? structuredDecision(body) : null;
     if (decisionBody) {
       return decisionBody;
     }
     if (!response.ok) {
       const detail = body?.error?.message || body?.detail || body?.message;
       const message = errorMessage(detail);
-      if (response.status === 401) throw new Error(message || 'Authentication failed. Check your API token.');
-      if (response.status === 403) throw new Error(message || 'You are not authorized to submit this request.');
-      if (response.status === 422) throw new Error(message || 'The request failed validation.');
-      if (response.status >= 500) throw new Error(message || `Server error (${response.status}). Please try again.`);
-      throw new Error(message || `Request failed (${response.status})`);
+      const context = { path, method, status: response.status };
+      if (response.status === 401) throw apiError(message || 'Authentication failed. Check your API token.', context);
+      if (response.status === 403) throw apiError(message || 'You are not authorized to submit this request.', context);
+      if (response.status === 422) throw apiError(message || 'The request failed validation.', context);
+      if (response.status >= 500) throw apiError(message || `Server error (${response.status}). Please try again.`, context);
+      throw apiError(message || `Request failed (${response.status})`, context);
     }
-    if (body === null) throw new Error('The server returned an unreadable response.');
+    if (body === null) throw apiError('The server returned an unreadable response.', { path, method, status: response.status });
     return body;
+  }
+  function apiError(message, context) {
+    const error = new Error(message);
+    Object.assign(error, context);
+    return error;
+  }
+  async function readApiResponseBody(response) {
+    const contentType = response.headers?.get?.('content-type') || '';
+    if (/application\/json|\+json/i.test(contentType)) {
+      return response.json().catch(() => null);
+    }
+    try {
+      const text = await response.text();
+      if (!text) return null;
+      try { return JSON.parse(text); }
+      catch { return { message: text }; }
+    } catch { return null; }
   }
   function errorMessage(detail) {
     if (typeof detail === 'string') return detail;
@@ -47,11 +66,10 @@
     if (detail && typeof detail === 'object') return detail.message || detail.msg || '';
     return '';
   }
-  function structuredDecisionForStatus(body, status) {
+  function structuredDecision(body) {
     if (!body || typeof body !== 'object' || !Array.isArray(body.reason_codes)) return null;
     const decision = String(body.decision || '').toLowerCase();
-    const expected = { 200: 'allow', 202: 'review', 403: 'block' }[status];
-    if (!expected || decision !== expected) return null;
+    if (!['allow', 'review', 'block'].includes(decision)) return null;
     return { ...body, decision };
   }
   function setDb(status) {
@@ -73,11 +91,13 @@
   function showDecision(result) {
     $('decision-section').hidden = false; $('analysis-section').hidden = false;
     const decision = result.decision || 'block';
+    const outcome = result.outcome || 'security_decision';
+    const outcomeLabels = { unsupported_intent: 'UNSUPPORTED INTENT', ambiguous_request: 'AMBIGUOUS REQUEST', ai_provider_unavailable: 'AI PROVIDER UNAVAILABLE', validation_error: 'VALIDATION ERROR' };
     const card = $('decision-card'); card.classList.remove('medium', 'high');
     if (decision !== 'allow') card.classList.add(decision === 'review' ? 'medium' : 'high');
-    $('decision-title').textContent = decision.toUpperCase();
+    $('decision-title').textContent = outcomeLabels[outcome] || decision.toUpperCase();
     $('decision-icon').textContent = decision === 'allow' ? '✓' : decision === 'review' ? '!' : '×';
-    $('decision-kicker').textContent = decision === 'allow' ? 'REQUEST CLEARED' : decision === 'review' ? 'HUMAN REVIEW REQUIRED' : 'REQUEST BLOCKED';
+    $('decision-kicker').textContent = outcome !== 'security_decision' ? 'REQUEST OUTCOME' : decision === 'allow' ? 'REQUEST CLEARED' : decision === 'review' ? 'HUMAN REVIEW REQUIRED' : 'REQUEST BLOCKED';
     $('decision-message').textContent = result.message || 'Decision recorded by QueryImmune policy.';
     const score = Number.isFinite(result.risk_score) ? result.risk_score : null;
     $('risk-score').textContent = score === null ? '—' : `${score.toFixed(1)} / 100`;
@@ -91,7 +111,9 @@
     if (Array.isArray(signals)) signals.forEach(signal => addChip(reasonBox, typeof signal === 'string' ? signal : signal.name || signal.code || JSON.stringify(signal)));
     else if (signals && typeof signals === 'object') Object.entries(signals).forEach(([name, value]) => addChip(reasonBox, `${name}: ${value}`));
     if (decision === 'review' || decision === 'block') {
-      $('decision-message').textContent = `${result.message || 'Decision recorded by QueryImmune policy.'} ${decision === 'review' ? 'Human review required; this request was not executed.' : 'This request was not executed.'}`;
+      const executionStatus = String(result.execution_status || 'not_run').replaceAll('_', ' ').toUpperCase();
+      const suffix = outcome !== 'security_decision' ? 'No query was executed.' : decision === 'review' ? 'Human review required; this request was not executed.' : 'This request was not executed.';
+      $('decision-message').textContent = `${result.message || 'Decision recorded by QueryImmune policy.'} Execution status: ${executionStatus}. ${suffix}`;
     }
 
     const intent = result.intent || {};
@@ -189,7 +211,7 @@
     } catch (error) {
       $('identity-status').textContent = 'Authentication unavailable';
       $('auth-hint').textContent = error.message;
-      toast(error.message);
+      console.warn('Dashboard refresh failed', { path: error.path || '/api/v1/dashboard', method: error.method || 'GET', status: error.status, message: error.message });
     }
   }
   async function runQuery() {
@@ -202,10 +224,15 @@
       clearToast();
       await demoConfigurationReady;
       const payload = { request: prompt };
-      if (demoMode && selectedScenario) payload.demo_scenario = selectedScenario;
+      if (demoMode && selectedScenario && prompt === selectedScenarioPrompt) payload.demo_scenario = selectedScenario;
+      else { selectedScenario = null; selectedScenarioPrompt = null; }
       const result = await api('/api/v1/nl-requests', { method: 'POST', body: JSON.stringify(payload) });
+      clearToast();
       showDecision(result); await refreshDashboard();
-    } catch (error) { toast(error.message); }
+    } catch (error) {
+      console.warn('Natural-language request failed', { path: error.path || '/api/v1/nl-requests', method: error.method || 'POST', status: error.status, message: error.message });
+      toast(error.message);
+    }
     finally { button.disabled = false; button.querySelector('span').textContent = 'Run security check'; }
   }
   function clearPreviousDecision() {
@@ -214,13 +241,21 @@
     $('results-section').hidden = true;
   }
   function clearToast() {
+    clearTimeout(toastTimer);
+    toastTimer = null;
     $('toast').textContent = '';
     $('toast').classList.remove('show');
   }
 
   $('run-button').addEventListener('click', runQuery);
   $('query-input').addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') runQuery(); });
-  document.querySelectorAll('[data-prompt]').forEach(button => button.addEventListener('click', () => { $('query-input').value = button.dataset.prompt; selectedScenario = button.dataset.scenario || null; document.querySelectorAll('[data-prompt]').forEach(item => item.classList.toggle('selected', item === button)); $('query-input').focus(); }));
+  $('query-input').addEventListener('input', () => {
+    if (!selectedScenario || $('query-input').value === selectedScenarioPrompt) return;
+    selectedScenario = null;
+    selectedScenarioPrompt = null;
+    document.querySelectorAll('[data-prompt]').forEach(item => item.classList.remove('selected'));
+  });
+  document.querySelectorAll('[data-prompt]').forEach(button => button.addEventListener('click', () => { $('query-input').value = button.dataset.prompt; selectedScenario = button.dataset.scenario || null; selectedScenarioPrompt = button.dataset.prompt; document.querySelectorAll('[data-prompt]').forEach(item => item.classList.toggle('selected', item === button)); $('query-input').focus(); }));
   $('token-open').addEventListener('click', () => { $('token-input').value = token(); tokenDialog.showModal(); });
   $('save-token').addEventListener('click', event => { event.preventDefault(); const value = $('token-input').value.trim(); if (!value) { toast('Paste a bearer token to connect.'); return; } sessionStorage.setItem(tokenKey, value); tokenDialog.close(); refreshDashboard(); toast('Token set for this browser tab.'); });
   $('refresh-button').addEventListener('click', async () => { await health(); await refreshDashboard(); });

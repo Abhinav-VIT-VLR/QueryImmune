@@ -22,7 +22,12 @@ def test_demo_fixture_candidates_use_real_intent_sql_validator(scenario, request
         assert result.reasons
 
 
-def test_demo_provider_refuses_to_select_a_scenario_implicitly():
+def test_demo_provider_handles_a_general_custom_prompt_without_fixture_state():
     provider = DemoFixtureProvider(None)
-    with pytest.raises(AIProviderError):
-        provider.complete("intent", {}, json_mode=True)
+    payload = {"request_untrusted": "Show me my first 5 appointments."}
+    intent = QueryIntent.model_validate_json(provider.complete("intent", payload, json_mode=True))
+    assert intent.request_status == "supported"
+    assert intent.action == "appointments.general_own"
+    assert intent.limit == 5
+    candidate = provider.complete("SQL", {**payload, "intent": intent.model_dump(mode="json")}, json_mode=False)
+    assert ":actor_id" in candidate

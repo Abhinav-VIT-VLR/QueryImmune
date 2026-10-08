@@ -68,6 +68,44 @@ def test_actor_rls_and_security_default_privileges_are_migrated():
     assert "security.action_role_policies" in migration
 
 
+def test_general_query_policy_is_database_backed_and_default_closed():
+    migration = (ROOT / "migrations" / "011_general_appointments_policy.sql").read_text(encoding="utf-8").lower()
+    assert "appointments.general_own" in migration
+    assert "appointments.general_aggregate" in migration
+    assert "insert into security.action_role_policies" in migration
+    assert "grant select" not in migration
+    directory = (ROOT / "migrations" / "012_general_doctor_directory.sql").read_text(encoding="utf-8").lower()
+    assert "security_invoker = true" in directory
+    assert "grant select on healthcare.general_doctor_directory to qi_runtime" in directory
+
+
+@pytest.mark.database
+def test_general_query_permissions_come_from_database_policy_rows():
+    if not os.environ.get("DATABASE_URL"):
+        pytest.skip("DATABASE_URL is not configured")
+    from queryimmune_db.repositories.healthcare import HealthcareRepository
+
+    repository = HealthcareRepository()
+    doctor = repository.actor_by_subject("demo:dr-ada")
+    analyst = repository.actor_by_subject("demo:analyst-riley")
+    assert doctor and analyst
+    assert repository.is_action_authorized(doctor.user_id, "appointments.general_own", ("appointments", "patients", "doctors"))
+    assert not repository.is_action_authorized(doctor.user_id, "appointments.general_aggregate", ("appointments", "doctors"))
+    assert repository.is_action_authorized(analyst.user_id, "appointments.general_aggregate", ("appointments", "doctors"))
+    assert not repository.is_action_authorized(analyst.user_id, "appointments.general_own", ("appointments", "patients", "doctors"))
+
+
+@pytest.mark.database
+def test_doctor_directory_view_keeps_underlying_doctor_rls():
+    if not os.environ.get("DATABASE_URL"):
+        pytest.skip("DATABASE_URL is not configured")
+    from queryimmune_db.connection import transaction
+
+    with transaction(read_only=True, actor_context_id="10000000-0000-4000-8000-000000000007") as conn:
+        rows = conn.execute("SELECT display_name FROM healthcare.general_doctor_directory ORDER BY display_name").fetchall()
+    assert rows == [("Dr Grace Example",)]
+
+
 def test_authorization_migration_is_role_referenced_and_runtime_read_only():
     migration = (ROOT / "migrations" / "009_database_action_authorization.sql").read_text(encoding="utf-8").lower()
     seed = (ROOT / "seed" / "001_synthetic_healthcare.sql").read_text(encoding="utf-8").lower()

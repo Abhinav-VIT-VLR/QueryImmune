@@ -21,6 +21,16 @@ def actor(roles: set[str]) -> Actor:
     return Actor("10000000-0000-4000-8000-000000000001", "test:actor", "Synthetic Test Actor", frozenset(roles))
 
 
+class _NoBehaviorPipeline:
+    """Keep RLS/executor integration tests deterministic under accumulated local history."""
+
+    def __init__(self, base):
+        self.base = base
+
+    def decide(self, request, authenticated_actor):
+        return self.base.decide(request, authenticated_actor)
+
+
 def test_role_policy_blocks_unauthorized_action():
     result = DeterministicPolicyPipeline(authorization_check=lambda *_: False).decide(
         ExecutionRequest(action="billing.summary"), actor({"doctor"})
@@ -246,8 +256,12 @@ def test_appointment_rows_are_isolated_by_database_actor_context(seeded_doctor):
 
 
 @pytest.mark.database
-def test_api_actor_change_changes_visible_appointments(seeded_doctor):
+def test_api_actor_change_changes_visible_appointments(seeded_doctor, monkeypatch):
     from queryimmune_db.connection import transaction
+    from importlib import import_module
+
+    app_module = import_module("queryimmune_db.api.app")
+    monkeypatch.setattr(app_module, "BehaviorAwarePipeline", _NoBehaviorPipeline)
 
     repository = HealthcareRepository()
     actor_a = seeded_doctor
@@ -444,9 +458,97 @@ def test_live_demo_scenarios_use_validator_gateway_and_postgres(seeded_doctor, m
             assert drift_response.json()["decision"] == "allow"
         dashboard_response = client.get("/api/v1/dashboard")
         assert dashboard_response.status_code == 200
-        assert dashboard_response.json()["behavior_profile"]["profile_version"] >= 2
-
+    assert dashboard_response.json()["behavior_profile"]["profile_version"] >= 2
     with transaction(read_only=True, actor_context_id=UUID(seeded_doctor.user_id)) as conn:
-        logs = conn.execute("""SELECT count(*) FROM security.query_logs
-            WHERE actor_id=%s AND decision IN ('allow','block')""", (UUID(seeded_doctor.user_id),)).fetchone()[0]
+        logs = conn.execute("SELECT count(*) FROM security.query_logs WHERE actor_id=%s AND decision IN ('allow','block')",
+                            (UUID(seeded_doctor.user_id),)).fetchone()[0]
     assert logs >= 14
+
+
+@pytest.mark.database
+def test_custom_general_select_runs_through_actor_rls_and_audit(seeded_doctor, monkeypatch):
+    from queryimmune_db.connection import transaction
+    from importlib import import_module
+
+    # Grace has no mature baseline, so the behavior warm-up can observe this
+    # new valid query without turning it into an unfamiliar-workload REVIEW.
+    grace = HealthcareRepository().actor_by_subject("demo:dr-grace")
+    assert grace
+    app_module = import_module("queryimmune_db.api.app")
+    monkeypatch.setattr(app_module, "BehaviorAwarePipeline", _NoBehaviorPipeline)
+    app.dependency_overrides[get_current_actor] = lambda: grace
+    with TestClient(app) as client:
+        response = client.post("/api/v1/nl-requests", json={"request": "Show me my first 5 appointments."})
+    assert response.status_code == 200
+    result = response.json()
+    assert result["decision"] == "allow"
+    assert result["execution_status"] == "succeeded"
+    assert result["intent"]["action"] == "appointments.general_own"
+    assert "d.user_id" in result["generated_sql"]
+    patient_numbers = {row["synthetic_patient_number"] for row in result["results"]}
+    assert patient_numbers.issubset({"SYN-PAT-0002", "SYN-PAT-0004"})
+    with transaction(read_only=True, actor_context_id=UUID(grace.user_id)) as conn:
+        log = conn.execute(
+            "SELECT decision, execution_status, row_count FROM security.query_logs WHERE request_id = %s",
+            (UUID(result["request_id"]),),
+        ).fetchone()
+    assert log == ("allow", "succeeded", result["row_count"])
+
+
+@pytest.mark.database
+def test_analyst_general_aggregate_executes_only_over_minimum_group_view(seeded_doctor, monkeypatch):
+    from importlib import import_module
+
+    analyst = HealthcareRepository().actor_by_subject("demo:analyst-riley")
+    assert analyst
+    app_module = import_module("queryimmune_db.api.app")
+    monkeypatch.setattr(app_module, "BehaviorAwarePipeline", _NoBehaviorPipeline)
+    app.dependency_overrides[get_current_actor] = lambda: analyst
+    with TestClient(app) as client:
+        response = client.post("/api/v1/nl-requests", json={"request": "Which doctors have the most appointments?"})
+    result = response.json()
+    assert response.status_code == 200
+    assert result["decision"] == "allow"
+    assert result["execution_status"] == "succeeded"
+    assert result["intent"]["action"] == "appointments.general_aggregate"
+    assert "general_doctor_directory" in result["generated_sql"]
+    assert "HAVING COUNT(*) >= 3" in result["generated_sql"]
+    assert result["results"] == []  # synthetic groups below three are suppressed
+
+
+@pytest.mark.database
+@pytest.mark.parametrize(("prompt", "expected_reason"), [
+    ("Show me all patient diagnoses.", "SENSITIVITY_EXPANSION"),
+    ("Delete all appointments.", "UNSUPPORTED_OPERATION"),
+    ("Show me another doctor's appointments.", "SCOPE_MISMATCH"),
+])
+def test_general_query_hard_rejections_are_audited_and_not_executed(seeded_doctor, prompt, expected_reason):
+    from queryimmune_db.connection import transaction
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/nl-requests", json={"request": prompt})
+    assert response.status_code == 403
+    result = response.json()
+    assert result["decision"] == "block"
+    assert result["execution_status"] == "not_run"
+    assert expected_reason in result["reason_codes"]
+    with transaction(read_only=True, actor_context_id=UUID(seeded_doctor.user_id)) as conn:
+        state = conn.execute(
+            "SELECT decision, execution_status FROM security.query_logs WHERE request_id = %s",
+            (UUID(result["request_id"]),),
+        ).fetchone()
+    assert state == ("block", "not_run")
+
+
+@pytest.mark.database
+@pytest.mark.parametrize(("prompt", "outcome"), [
+    ("Tell me a joke.", "unsupported_intent"),
+    ("Show me that thing from last week.", "ambiguous_request"),
+])
+def test_demo_provider_returns_distinct_non_query_outcomes(seeded_doctor, prompt, outcome):
+    with TestClient(app) as client:
+        response = client.post("/api/v1/nl-requests", json={"request": prompt})
+    assert response.status_code == 200
+    result = response.json()
+    assert result["outcome"] == outcome
+    assert result["execution_status"] == "not_run"

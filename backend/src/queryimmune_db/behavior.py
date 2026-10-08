@@ -35,8 +35,8 @@ class BehaviorAnalyzer:
         now = now or datetime.now(timezone.utc)
         summary = dict((profile or {}).get("feature_summary") or {})
         baseline_n = int((profile or {}).get("approved_sample_count") or 0)
-        current_action = str(features.get("action") or features.get("intent_action") or "unknown")
-        current_tables = _set(features.get("tables") or features.get("intent_tables"))
+        current_action = str(features.get("behavior_action") or features.get("action") or features.get("intent_action") or "unknown")
+        current_tables = _set(features.get("behavior_tables") or features.get("tables") or features.get("intent_tables"))
         current_columns = _set(features.get("columns") or features.get("intent_columns"))
         signature = str(features.get("semantic_signature") or current_action)
         reasons: list[str] = []
@@ -91,8 +91,8 @@ class BehaviorAnalyzer:
                 reasons.append("LEGITIMATE_WORKLOAD_DRIFT")
         # Require adequately sampled windows; compare action distributions to distinguish sustained drift.
         if len(recent) >= 5 and len(prior) >= 10:
-            recent_actions = [str((e.get("feature_snapshot") or {}).get("action", "")) for e in recent]
-            prior_actions = [str((e.get("feature_snapshot") or {}).get("action", "")) for e in prior]
+            recent_actions = [str((e.get("feature_snapshot") or {}).get("behavior_action") or (e.get("feature_snapshot") or {}).get("action", "")) for e in recent]
+            prior_actions = [str((e.get("feature_snapshot") or {}).get("behavior_action") or (e.get("feature_snapshot") or {}).get("action", "")) for e in prior]
             r_share = recent_actions.count(current_action) / len(recent_actions)
             p_share = prior_actions.count(current_action) / len(prior_actions)
             if r_share >= 0.6 and p_share < 0.2:
@@ -138,6 +138,13 @@ class ExplainableRiskEngine:
         factors["access_scope"] = {"own_records": 0.0, "aggregate": 3.0, "bounded": 5.0, "all_records": 50.0, "unknown": 25.0}.get(scope, 20.0)
         if factors["access_scope"] >= 25:
             codes.append("BROAD_OR_UNKNOWN_SCOPE")
+        complexity = features.get("query_complexity") or {}
+        nodes = max(0, int(complexity.get("ast_nodes") or 0)) if isinstance(complexity, Mapping) else 0
+        depth = max(0, int(complexity.get("ast_depth") or 0)) if isinstance(complexity, Mapping) else 0
+        joins = max(0, int(complexity.get("joins") or 0)) if isinstance(complexity, Mapping) else 0
+        factors["query_complexity"] = min(20.0, round(max(0, nodes - 30) * 0.15 + max(0, depth - 8) * 0.5 + joins * 2.0, 2))
+        if factors["query_complexity"] >= 10:
+            codes.append("QUERY_COMPLEXITY_RISK")
         factors["behavior_deviation"] = behavior.deviation * 0.35
         factors["workload_drift"] = 10.0 if behavior.drift else 0.0
         # Authorization has already been decided by the deterministic database
@@ -256,7 +263,8 @@ class ControlledProfileUpdater:
         now = datetime.now(timezone.utc)
         hour = str(now.hour)
         hours = _set(prior.get("active_hours")); hours.add(hour)
-        prior.update({"actions": merge("actions", features.get("action", "")),
+        behavior_actions = {str(features.get("action", "")).lower(), str(features.get("behavior_action", "")).lower()} - {""}
+        prior.update({"actions": merge("actions", behavior_actions),
                       "tables": merge("tables", features.get("tables", [])),
                       "columns": merge("columns", features.get("columns", [])),
                       "operations": merge("operations", features.get("operation", "read")),

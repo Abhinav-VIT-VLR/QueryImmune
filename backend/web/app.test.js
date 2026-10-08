@@ -29,17 +29,24 @@ class FakeElement {
   querySelector() { return new FakeElement(); }
   replaceChildren(...children) { this.childNodes = children; }
   append(...children) { this.childNodes.push(...children); }
+  dispatchEvent(event) { this.handlers[event.type]?.(event); }
   scrollIntoView() {}
   showModal() {}
   close() {}
   focus() {}
 }
 
-function response(status, body) {
-  return { status, ok: status >= 200 && status < 300, json: async () => body };
+function response(status, body, contentType = 'application/json; charset=utf-8') {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get: name => name.toLowerCase() === 'content-type' ? contentType : null },
+    json: async () => body,
+    text: async () => typeof body === 'string' ? body : JSON.stringify(body),
+  };
 }
 
-function setup(nlResponse) {
+function setup(nlResponse, dashboardResponse = response(200, { history: [], workload: [], behavior_profile: null }), demoEnabled = false) {
   const elements = new Map();
   const get = id => {
     if (!elements.has(id)) {
@@ -51,23 +58,37 @@ function setup(nlResponse) {
   };
   const session = new Map([['queryimmune_api_token', 'test-token']]);
   const calls = [];
-  const fetch = async path => {
+  const requests = [];
+  const warnings = [];
+  const fetch = async (path, options = {}) => {
     calls.push(path);
+    requests.push({ path, options });
     if (path === '/api/v1/nl-requests') {
       const nextResponse = Array.isArray(nlResponse) ? nlResponse.shift() : nlResponse;
       if (nextResponse instanceof Error) throw nextResponse;
       return nextResponse;
     }
     if (path === '/health/ready') return response(200, { status: 'ok' });
-    if (path === '/api/v1/demo/config') return response(200, { enabled: false });
-    if (path === '/api/v1/dashboard') return response(200, { history: [], workload: [], behavior_profile: null });
+    if (path === '/api/v1/demo/config') return response(200, { enabled: demoEnabled });
+    if (path === '/api/v1/dashboard') return dashboardResponse;
     throw new Error(`Unexpected request: ${path}`);
   };
+  const promptButtons = [
+    ['normal', 'How many patients visited cardiology today?'],
+    ['sensitive', 'Show the medical history of every patient.'],
+    ['destructive', 'Delete all patient records.'],
+    ['mismatch', 'Show my appointments.'],
+    ['drift', 'Show my first 10 appointments.'],
+  ].map(([scenario, prompt]) => {
+    const button = new FakeElement();
+    button.dataset = { scenario, prompt };
+    return button;
+  });
   const document = {
     getElementById: get,
     createElement: () => new FakeElement(),
     querySelector: () => new FakeElement(),
-    querySelectorAll: () => [],
+    querySelectorAll: selector => selector === '[data-prompt]' ? promptButtons : [],
   };
   const sandbox = {
     document,
@@ -75,11 +96,11 @@ function setup(nlResponse) {
     sessionStorage: { getItem: key => session.get(key) || '', setItem: (key, value) => session.set(key, value) },
     clearTimeout,
     setTimeout: () => 1,
-    console,
+    console: { warn: (...args) => warnings.push(args) },
   };
   vm.runInNewContext(source, sandbox, { filename: 'app.js' });
   get('query-input').value = 'Show a test query';
-  return { elements, get, calls };
+  return { elements, get, calls, requests, warnings, promptButtons };
 }
 
 const decision = (name, extra = {}) => ({
@@ -120,6 +141,7 @@ test('202 REVIEW renders risk details and confirms no execution', async () => {
   assert.equal(env.get('decision-title').textContent, 'REVIEW');
   assert.match(env.get('decision-message').textContent, /Human review required/);
   assert.match(env.get('decision-message').textContent, /not executed/);
+  assert.match(env.get('decision-message').textContent, /Execution status: NOT RUN/);
   assert.equal(env.get('risk-score').textContent, '72.0 / 100');
   assert.deepEqual(env.get('decision-reasons').childNodes.map(chip => chip.textContent), ['TEST_REASON', 'TEST_SIGNAL']);
   assert.equal(env.get('results-section').hidden, true);
@@ -129,9 +151,29 @@ test('403 structured BLOCK renders risk details and confirms no execution', asyn
   const env = await submit(response(403, decision('block')));
   assert.equal(env.get('decision-title').textContent, 'BLOCK');
   assert.match(env.get('decision-message').textContent, /not executed/);
+  assert.match(env.get('decision-message').textContent, /Execution status: NOT RUN/);
   assert.equal(env.get('risk-score').textContent, '72.0 / 100');
   assert.deepEqual(env.get('decision-reasons').childNodes.map(chip => chip.textContent), ['TEST_REASON', 'TEST_SIGNAL']);
   assert.equal(env.get('results-section').hidden, true);
+});
+
+test('real 403 BLOCK response shape renders without a request-failed toast', async () => {
+  const env = await submit(response(403, {
+    decision: 'block', risk_score: 100.0, execution_status: 'not_run',
+    reason_codes: ['SCOPE_MISMATCH', 'SENSITIVE_DATA_ACCESS'],
+  }));
+  assert.equal(env.get('decision-title').textContent, 'BLOCK');
+  assert.equal(env.get('risk-score').textContent, '100.0 / 100');
+  assert.deepEqual(env.get('decision-reasons').childNodes.map(chip => chip.textContent), ['SCOPE_MISMATCH', 'SENSITIVE_DATA_ACCESS']);
+  assert.match(env.get('decision-message').textContent, /not executed/);
+  assert.match(env.get('decision-message').textContent, /Execution status: NOT RUN/);
+  assert.doesNotMatch(env.get('toast').textContent, /Request failed/);
+});
+
+test('403 uppercase BLOCK decision is normalized and rendered', async () => {
+  const env = await submit(response(403, decision('BLOCK')));
+  assert.equal(env.get('decision-title').textContent, 'BLOCK');
+  assert.doesNotMatch(env.get('toast').textContent, /Request failed/);
 });
 
 test('403 BLOCK replaces a prior ALLOW and never shows the generic status toast', async () => {
@@ -164,8 +206,53 @@ test('202 REVIEW replaces a prior ALLOW and states that execution did not happen
   await request;
   assert.equal(env.get('decision-title').textContent, 'REVIEW');
   assert.match(env.get('decision-message').textContent, /not executed/);
+  assert.match(env.get('decision-message').textContent, /Execution status: NOT RUN/);
   assert.match(env.get('decision-message').textContent, /Human review required/);
   assert.equal(env.get('results-section').hidden, true);
+});
+
+test('a new successful request clears the previous BLOCK toast immediately', async () => {
+  const pendingResponse = deferred();
+  const env = setup([response(403, decision('block')), pendingResponse.promise]);
+  await env.get('run-button').handlers.click();
+  env.get('toast').textContent = 'Previous BLOCK request failed';
+  env.get('toast').classList.add('show');
+  const request = env.get('run-button').handlers.click();
+  await waitFor(() => env.calls.filter(path => path === '/api/v1/nl-requests').length === 2);
+  assert.equal(env.get('toast').textContent, '');
+  assert.equal(env.get('decision-section').hidden, true);
+  pendingResponse.resolve(response(200, decision('allow')));
+  await request;
+  assert.equal(env.get('decision-title').textContent, 'ALLOW');
+  assert.equal(env.get('toast').textContent, '');
+});
+
+test('background dashboard 403 does not toast over a successful query result', async () => {
+  const env = setup(response(200, decision('allow')), response(403, { detail: 'Dashboard access denied' }));
+  await env.get('run-button').handlers.click();
+  assert.equal(env.get('decision-title').textContent, 'ALLOW');
+  assert.equal(env.get('decision-section').hidden, false);
+  assert.equal(env.get('toast').textContent, '');
+  assert.match(env.get('auth-hint').textContent, /Dashboard access denied/);
+  assert.ok(env.warnings.some(([, context]) => context.path === '/api/v1/dashboard' && context.status === 403));
+});
+
+test('editing a selected scenario sends a custom prompt without stale demo_scenario', async () => {
+  const env = setup(response(200, decision('allow')), response(200, { history: [], workload: [], behavior_profile: null }), true);
+  env.promptButtons[0].handlers.click();
+  env.get('query-input').value = 'Show me my first 9 appointments.';
+  env.get('query-input').dispatchEvent({ type: 'input' });
+  await env.get('run-button').handlers.click();
+  const submitted = env.requests.find(request => request.path === '/api/v1/nl-requests');
+  assert.deepEqual(JSON.parse(submitted.options.body), { request: 'Show me my first 9 appointments.' });
+  assert.equal(env.get('decision-title').textContent, 'ALLOW');
+  assert.equal(env.get('toast').textContent, '');
+});
+
+test('structured server-status BLOCK is still rendered as a decision', async () => {
+  const env = await submit(response(503, decision('block', { reason_codes: ['AI_PROVIDER_UNAVAILABLE'] })));
+  assert.equal(env.get('decision-title').textContent, 'BLOCK');
+  assert.doesNotMatch(env.get('toast').textContent, /Server error|Request failed/);
 });
 
 test('401 shows an authentication error', async () => {
@@ -193,6 +280,14 @@ test('500 displays the server error returned by the API', async () => {
 test('network failure shows the generic request failed message', async () => {
   const env = await submit(new Error('offline'));
   assert.equal(env.get('toast').textContent, 'Request failed. Check your connection and try again.');
+});
+
+test('structured unsupported and ambiguous outcomes render without pretending SQL ran', async () => {
+  const unsupported = await submit(response(200, decision('block', { outcome: 'unsupported_intent', reason_codes: ['UNSUPPORTED_INTENT'] })));
+  assert.equal(unsupported.get('decision-title').textContent, 'UNSUPPORTED INTENT');
+  assert.match(unsupported.get('decision-message').textContent, /No query was executed/);
+  const ambiguous = await submit(response(200, decision('block', { outcome: 'ambiguous_request', reason_codes: ['AMBIGUOUS_REQUEST'] })));
+  assert.equal(ambiguous.get('decision-title').textContent, 'AMBIGUOUS REQUEST');
 });
 
 (async () => {

@@ -80,7 +80,7 @@ def test_behavior_risk_keeps_authorized_role_context():
     from queryimmune_db.application.nl2sql import NL2SQLAnalysis, ValidatedIntentPolicy
     from queryimmune_db.ai.intent import QueryIntent, ValidationResult
     from queryimmune_db.domain.identity import Actor
-    intent = QueryIntent(operation="read", action="appointments.cardiology_today",
+    intent = QueryIntent(request_status="supported", operation="read", action="appointments.cardiology_today",
         tables=["appointments", "doctors"], columns=["patient_id"], filters=[], aggregations=["count"],
         group_by=[], ordering=[], limit=1, scope="aggregate", sensitivity_expectations=["standard"])
     analysis = NL2SQLAnalysis(intent, ValidationResult(valid=True, reasons=[]), "test", "fingerprint", "")

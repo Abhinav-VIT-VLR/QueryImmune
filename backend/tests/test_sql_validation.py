@@ -10,6 +10,7 @@ from queryimmune_db.security.sql_validation import IntentSqlValidator
 
 def appointment_intent(**updates) -> QueryIntent:
     values = {
+        "request_status": "supported",
         "operation": "read",
         "action": "appointments.mine",
         "tables": ["appointments", "patients", "doctors"],
@@ -52,7 +53,7 @@ def test_valid_appointment_date_filter():
 
 def test_valid_sensitive_billing_aggregate_when_expected():
     intent = QueryIntent(
-        operation="read", action="billing.summary", tables=["billing"],
+        request_status="supported", operation="read", action="billing.summary", tables=["billing"],
         columns=["status", "currency", "amount"], filters=[],
         aggregations=["count", "sum"], group_by=["status", "currency"],
         ordering=[{"column": "status", "direction": "asc"}, {"column": "currency", "direction": "asc"}], limit=25,
@@ -64,6 +65,7 @@ def test_valid_sensitive_billing_aggregate_when_expected():
 
 def status_intent(**updates) -> QueryIntent:
     values = {
+        "request_status": "supported",
         "operation": "read", "action": "appointments.by_status",
         "tables": ["appointments", "doctors"], "columns": ["status", "specialty"],
         "filters": [], "aggregations": ["count"], "group_by": ["status", "specialty"],
@@ -121,7 +123,7 @@ def test_requested_billing_entity_cannot_be_rewritten_as_appointments():
 
 def test_missing_aggregate_is_reported():
     intent = QueryIntent(
-        operation="read", action="appointments.by_status", tables=["appointments", "doctors"],
+        request_status="supported", operation="read", action="appointments.by_status", tables=["appointments", "doctors"],
         columns=["status", "specialty"], filters=[], aggregations=["count"],
         group_by=["status", "specialty"], ordering=[], limit=25,
         scope="aggregate", sensitivity_expectations=["standard"],
@@ -195,7 +197,7 @@ def test_iso_dates_are_preserved_for_intent_filters():
 
 def test_provider_pipeline_extracts_intent_then_generates_candidate_with_scrubbed_text():
     intent_json = QueryIntent(
-        operation="read", action="appointments.mine", tables=["appointments", "patients", "doctors"],
+        request_status="supported", operation="read", action="appointments.mine", tables=["appointments", "patients", "doctors"],
         columns=["scheduled_at", "status", "reason_category", "synthetic_patient_number", "specialty"],
         filters=[], aggregations=[], group_by=[],
         ordering=[{"column": "scheduled_at", "direction": "desc"}], limit=25,

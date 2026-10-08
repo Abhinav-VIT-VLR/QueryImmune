@@ -34,6 +34,8 @@ class DeterministicPolicyPipeline:
         "appointments.by_status": ("appointments", "doctors"),
         "billing.summary": ("billing",),
         "appointments.cardiology_today": ("appointments", "doctors"),
+        "appointments.general_own": ("appointments", "patients", "doctors"),
+        "appointments.general_aggregate": ("appointments", "doctors"),
     }
 
     def __init__(
@@ -55,15 +57,19 @@ class DeterministicPolicyPipeline:
                 "appointments.by_status": ["appointments", "doctors"],
                 "billing.summary": ["billing"],
                 "appointments.cardiology_today": ["appointments", "doctors"],
+                "appointments.general_own": ["appointments", "patients", "doctors"],
+                "appointments.general_aggregate": ["appointments", "doctors"],
             }.get(request.action, []),
             "columns": {
                 "appointments.mine": ["scheduled_at", "status", "reason_category", "synthetic_patient_number", "specialty"],
                 "appointments.by_status": ["status", "specialty", "appointment_count"],
                 "billing.summary": ["status", "currency", "invoice_count", "total_amount"],
                 "appointments.cardiology_today": ["patient_id", "patient_count"],
+                "appointments.general_own": [],
+                "appointments.general_aggregate": [],
             }.get(request.action, []),
             "semantic_signature": f"{request.action}:limit={request.limit}:date={'yes' if request.from_date else 'no'}",
-            "scope": "own_records" if request.action == "appointments.mine" else "aggregate",
+            "scope": "own_records" if request.action in {"appointments.mine", "appointments.general_own"} else "aggregate",
             "sensitivity": "sensitive" if request.action == "billing.summary" else "standard",
             "limit": request.limit,
         }

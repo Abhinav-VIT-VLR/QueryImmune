@@ -11,6 +11,7 @@ from queryimmune_db.ai.context import SchemaContextRetriever
 from queryimmune_db.api.models import ExecutionRequest
 from queryimmune_db.domain.identity import Actor
 from queryimmune_db.security.sql_validation import IntentSqlValidator
+from queryimmune_db.security.general_sql import GeneralSelectValidator
 from queryimmune_db.services.policy import Decision, DeterministicPolicyPipeline
 
 
@@ -46,7 +47,10 @@ class NL2SQLPipeline:
 
     def generate_and_validate(self, request_text: str, intent: QueryIntent, context: dict[str, object]) -> NL2SQLAnalysis:
         candidate_sql = self.analyzer.generate_sql(request_text, intent, context)
-        validation = self.validator.validate(request_text, intent, candidate_sql)
+        if intent.action in {"appointments.general_own", "appointments.general_aggregate"}:
+            validation = GeneralSelectValidator().validate(request_text, intent, candidate_sql)
+        else:
+            validation = self.validator.validate(request_text, intent, candidate_sql)
         candidate_fingerprint = validation.analysis.canonical_fingerprint if validation.analysis else hashlib.sha256(candidate_sql.encode("utf-8")).hexdigest()
         return NL2SQLAnalysis(
             intent=intent, validation=validation, model_version=self.provider.model_version,
@@ -70,6 +74,11 @@ class ValidatedIntentPolicy:
     def decide(self, request: ExecutionRequest, actor: Actor) -> Decision:
         validation = self.analysis.validation
         intent = self.analysis.intent
+        behavior_action = {
+            "appointments.general_own": "appointments.mine",
+            "appointments.general_aggregate": "appointments.by_status",
+        }.get(intent.action, intent.action)
+        behavior_tables = ["doctors" if table == "general_doctor_directory" else table for table in intent.tables]
         features = {
             "validated": validation.valid,
             "intent_action": intent.action,
@@ -80,12 +89,23 @@ class ValidatedIntentPolicy:
             "sql_fingerprint": validation.analysis.canonical_fingerprint if validation.analysis else None,
             "candidate_fingerprint": self.analysis.candidate_fingerprint,
             "action": intent.action,
+            "behavior_action": behavior_action,
+            "behavior_tables": behavior_tables,
             "operation": intent.operation,
             "tables": intent.tables,
             "columns": intent.columns,
             "scope": intent.scope,
             "sensitivity": "restricted" if "restricted" in intent.sensitivity_expectations else "sensitive" if "sensitive" in intent.sensitivity_expectations else "standard",
-            "semantic_signature": ":".join((intent.action, ",".join(sorted(intent.tables)), ",".join(sorted(intent.columns)), ",".join(sorted(intent.aggregations)), intent.scope, f"limit-{_limit_bucket(intent.limit)}")),
+            "query_complexity": {
+                "ast_nodes": validation.analysis.ast_node_count if validation.analysis else 0,
+                "ast_depth": validation.analysis.ast_max_depth if validation.analysis else 0,
+                "joins": validation.analysis.join_count if validation.analysis else 0,
+            },
+            "semantic_signature": ":".join((
+                behavior_action,
+                ",".join(sorted(behavior_tables)), ",".join(sorted(intent.columns)),
+                ",".join(sorted(intent.aggregations)), intent.scope, f"limit-{_limit_bucket(intent.limit)}",
+            )),
         }
         if not validation.valid:
             return Decision(
