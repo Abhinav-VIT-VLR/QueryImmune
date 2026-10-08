@@ -40,6 +40,7 @@ class DecisionResponse(BaseModel):
 class NaturalLanguageResponse(BaseModel):
     request_id: UUID
     decision: Literal["allow", "review", "block"]
+    outcome: Literal["security_decision", "unsupported_intent", "ambiguous_request", "ai_provider_unavailable", "validation_error"] = "security_decision"
     reason_codes: list[str]
     message: str
     intent: QueryIntent | None = None

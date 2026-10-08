@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 
 import psycopg
 from psycopg import sql
 
 from queryimmune_db import env as _env  # noqa: F401
+from queryimmune_db.paths import project_root
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = project_root()
 MIGRATIONS = ROOT / "migrations"
+DATABASE_ROLES = ("qi_owner", "qi_runtime")
 
 
 def admin_url() -> str:
@@ -20,6 +21,31 @@ def admin_url() -> str:
     if not value:
         raise RuntimeError("DATABASE_ADMIN_URL is required for migrations")
     return value
+
+
+def provision_database_roles() -> None:
+    """Ensure migration-owned roles exist before applying any migrations.
+
+    The migration ledger can outlive role state (for example after manual
+    role removal or a partially restored database). Keep these prerequisites
+    independent of whether the foundation migration is already recorded.
+    """
+    with psycopg.connect(admin_url(), autocommit=True, connect_timeout=5) as conn:
+        for role_name in DATABASE_ROLES:
+            exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role_name,)).fetchone()
+            if not exists:
+                conn.execute(
+                    sql.SQL("CREATE ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION").format(
+                        sql.Identifier(role_name)
+                    )
+                )
+            else:
+                conn.execute(
+                    sql.SQL("ALTER ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION").format(
+                        sql.Identifier(role_name)
+                    )
+                )
+    print("provisioned database privilege roles")
 
 
 def apply_migrations() -> None:
@@ -45,6 +71,8 @@ def provision_runtime_role() -> None:
         raise RuntimeError("DATABASE_RUNTIME_PASSWORD is required to provision the runtime login")
     if not role_name.replace("_", "").isalnum():
         raise RuntimeError("DATABASE_RUNTIME_ROLE must contain only letters, digits, and underscores")
+    if role_name == "qi_runtime":
+        raise RuntimeError("DATABASE_RUNTIME_ROLE must be a login distinct from the qi_runtime privilege role")
     with psycopg.connect(admin_url(), autocommit=True, connect_timeout=5) as conn:
         exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role_name,)).fetchone()
         if not exists:
@@ -65,7 +93,10 @@ def main() -> None:
     parser.add_argument("command", choices=("migrate", "provision-runtime", "seed", "setup"))
     command = parser.parse_args().command
     if command in ("migrate", "setup"):
+        provision_database_roles()
         apply_migrations()
+    elif command == "provision-runtime":
+        provision_database_roles()
     if command in ("provision-runtime", "setup"):
         provision_runtime_role()
     if command in ("seed", "setup"):

@@ -5,7 +5,6 @@ import uuid
 import logging
 import hashlib
 from dataclasses import replace
-from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -24,7 +23,8 @@ from queryimmune_db.api.models import (
     NaturalLanguageRequest,
     NaturalLanguageResponse,
 )
-from queryimmune_db.ai.provider import AIProviderError, configured_provider
+from queryimmune_db.paths import project_root
+from queryimmune_db.ai.provider import AIModelOutputError, AIProviderError, configured_provider
 from queryimmune_db.application.nl2sql import (
     FixedDecisionPolicy,
     NL2SQLPipeline,
@@ -146,8 +146,30 @@ def execute_natural_language_request(
         provider_model = provider.model_version
         pipeline = NL2SQLPipeline(provider)
         intent, schema_context = pipeline.extract_intent(body.request)
+    except AIModelOutputError:
+        return _audit_nl_failure(request_id, actor, repository, response, provider_model,
+                                 outcome="validation_error", reason_code="MODEL_OUTPUT_INVALID",
+                                 message="The language provider returned an invalid structured response", status_code=422)
     except AIProviderError:
         return _audit_nl_failure(request_id, actor, repository, response, provider_model)
+
+    if intent.request_status in {"unsupported", "ambiguous"}:
+        outcome = "ambiguous_request" if intent.request_status == "ambiguous" else "unsupported_intent"
+        code = "AMBIGUOUS_REQUEST" if intent.request_status == "ambiguous" else "UNSUPPORTED_INTENT"
+        message = "The request needs a more specific entity or timeframe" if outcome == "ambiguous_request" else "This request is outside the supported healthcare query schema"
+        decision = Decision("block", (code,), 100.0, message, "phase5-general-nl-v1", provider_model,
+                            {"validated": False, "outcome": outcome, "action": intent.action, "scope": intent.scope})
+        result = ExecutionService(repository, FixedDecisionPolicy(decision)).handle(
+            request_id, ExecutionRequest(action=intent.action, limit=25), actor,
+            query_fingerprint=hashlib.sha256(body.request.encode("utf-8")).hexdigest(), raise_on_block=False,
+        )
+        response.status_code = 200
+        return NaturalLanguageResponse(
+            request_id=request_id, decision=result.decision, outcome=outcome,
+            reason_codes=result.reason_codes, message=result.message, intent=intent,
+            provider_model=provider_model, risk_score=result.risk_score, risk_level=result.risk_level,
+            risk_analysis=result.risk_analysis, execution_status="not_run",
+        )
 
     intent_request = ExecutionRequest(action=intent.action, limit=intent.limit)
     preliminary = DeterministicPolicyPipeline(settings.result_limit, settings.review_limit).decide(intent_request, actor)
@@ -167,11 +189,16 @@ def execute_natural_language_request(
         return NaturalLanguageResponse(
             request_id=request_id, decision=result.decision, reason_codes=result.reason_codes,
             message=result.message, intent=intent, provider_model=provider_model,
+            risk_score=result.risk_score, risk_level=result.risk_level, risk_analysis=result.risk_analysis,
             execution_status="not_run",
         )
 
     try:
         analysis = pipeline.generate_and_validate(body.request, intent, schema_context)
+    except AIModelOutputError:
+        return _audit_nl_failure(request_id, actor, repository, response, provider_model,
+                                 outcome="validation_error", reason_code="MODEL_OUTPUT_INVALID",
+                                 message="The language provider returned an invalid SQL candidate", status_code=422)
     except AIProviderError:
         return _audit_nl_failure(request_id, actor, repository, response, provider_model)
 
@@ -190,11 +217,14 @@ def execute_natural_language_request(
         request_id, gateway_request, actor,
         query_fingerprint=analysis.candidate_fingerprint,
         raise_on_block=False,
+        general_sql=(analysis.validation.analysis.canonical_sql if analysis.validation.valid and intent.action in {"appointments.general_own", "appointments.general_aggregate"} and analysis.validation.analysis else None),
+        general_actor_scoped=intent.action == "appointments.general_own",
     )
     response.status_code = 403 if result.decision == "block" else 202 if result.decision == "review" else 200
     return NaturalLanguageResponse(
         request_id=request_id,
         decision=result.decision,
+        outcome="security_decision",
         reason_codes=result.reason_codes,
         message=result.message,
         intent=intent,
@@ -213,7 +243,8 @@ def execute_natural_language_request(
 @app.get("/api/v1/dashboard", response_model=DashboardResponse, tags=["audit"])
 def dashboard(actor: Actor = Depends(get_current_actor)) -> DashboardResponse:
     try:
-        data = HealthcareRepository().dashboard(uuid.UUID(actor.user_id))
+        actor_id = uuid.UUID(actor.user_id)
+        data = HealthcareRepository().dashboard(actor_id, actor_context_id=actor_id)
     except (psycopg.Error, RuntimeError):
         # Do not expose connection details or audit contents in database failures.
         raise HTTPException(status_code=503, detail="Dashboard data is unavailable") from None
@@ -226,25 +257,39 @@ def demo_configuration() -> dict[str, bool]:
     return {"enabled": settings.ai_provider == "demo"}
 
 
-def _audit_nl_failure(request_id, actor, repository, response, model_version: str | None) -> NaturalLanguageResponse:
+def _audit_nl_failure(request_id, actor, repository, response, model_version: str | None, *,
+                      outcome: str = "ai_provider_unavailable", reason_code: str = "AI_PROVIDER_UNAVAILABLE",
+                      message: str = "Natural-language processing is unavailable", status_code: int = 503) -> NaturalLanguageResponse:
     decision = Decision(
-        "block", ("AI_PROVIDER_UNAVAILABLE",), 100.0,
-        "Natural-language processing is unavailable", "phase3-intent-sql-v1",
-        model_version, {"validated": False, "mismatch_codes": ["AI_PROVIDER_UNAVAILABLE"]},
+        "block", (reason_code,), 100.0,
+        message, "phase5-general-nl-v1",
+        model_version, {"validated": False, "mismatch_codes": [reason_code], "outcome": outcome},
     )
     gateway = ExecutionService(repository, FixedDecisionPolicy(decision))
     result = gateway.handle(
         request_id, ExecutionRequest(action="ai.unavailable", limit=25), actor,
         query_fingerprint=hashlib.sha256(b"NO_SQL_CANDIDATE").hexdigest(), raise_on_block=False,
     )
-    response.status_code = 503
+    response.status_code = status_code
     return NaturalLanguageResponse(
-        request_id=request_id, decision=result.decision, reason_codes=result.reason_codes,
+        request_id=request_id, decision=result.decision, outcome=outcome, reason_codes=result.reason_codes,
         message=result.message, provider_model=model_version, execution_status="not_run",
     )
 
 
-WEB_ROOT = Path(__file__).resolve().parents[3] / "web"
+WEB_ROOT = project_root() / "web"
+
+
+@app.get("/static/app.js", include_in_schema=False)
+def frontend_script() -> FileResponse:
+    # Always fetch the demo's current frontend after an API image rebuild.
+    return FileResponse(
+        WEB_ROOT / "app.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
 app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
 
 

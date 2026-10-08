@@ -80,40 +80,41 @@ def test_behavior_risk_keeps_authorized_role_context():
     from queryimmune_db.application.nl2sql import NL2SQLAnalysis, ValidatedIntentPolicy
     from queryimmune_db.ai.intent import QueryIntent, ValidationResult
     from queryimmune_db.domain.identity import Actor
-    intent = QueryIntent(operation="read", action="appointments.cardiology_today",
+    intent = QueryIntent(request_status="supported", operation="read", action="appointments.cardiology_today",
         tables=["appointments", "doctors"], columns=["patient_id"], filters=[], aggregations=["count"],
         group_by=[], ordering=[], limit=1, scope="aggregate", sensitivity_expectations=["standard"])
     analysis = NL2SQLAnalysis(intent, ValidationResult(valid=True, reasons=[]), "test", "fingerprint", "")
-    decision = ValidatedIntentPolicy(analysis, 100, 25).decide(ExecutionRequest(action=intent.action, limit=1),
+    decision = ValidatedIntentPolicy(analysis, 100, 25, authorization_check=lambda *_: True).decide(ExecutionRequest(action=intent.action, limit=1),
         Actor("user", "subject", "Doctor", frozenset({"doctor"})))
     assert decision.state == "allow"
-    assert decision.feature_snapshot["allowed_roles"] == ["admin", "analyst", "doctor"]
+    assert decision.feature_snapshot["action"] == "appointments.cardiology_today"
+    assert "allowed_roles" not in decision.feature_snapshot
 
 
 def test_profile_updater_rejects_poisoning_inputs_and_requires_sample_gate():
     class Repository:
         def __init__(self): self.writes = []
-        def load(self, actor_id): return None, []
-        def eligible_sample_count(self, actor_id): return 9
+        def load(self, actor_id, *, actor_context_id): return None, []
+        def eligible_sample_count(self, actor_id, *, actor_context_id): return 9
         def append_profile(self, *args): self.writes.append(args)
     repo = Repository()
     updater = ControlledProfileUpdater(repo)
-    updater.observe_success("actor", {"risk_level": "HIGH", "risk_reasons": [], "action": "billing.summary"})
-    updater.observe_success("actor", {"risk_level": "LOW", "risk_reasons": ["UNSEEN_ACTION_PATTERN"], "action": "billing.summary"})
-    updater.observe_success("actor", {"risk_level": "LOW", "risk_reasons": ["BASELINE_WARMUP"], "action": "appointments.mine"})
+    updater.observe_success("actor", {"risk_level": "HIGH", "risk_reasons": [], "action": "billing.summary"}, actor_context_id="actor")
+    updater.observe_success("actor", {"risk_level": "LOW", "risk_reasons": ["UNSEEN_ACTION_PATTERN"], "action": "billing.summary"}, actor_context_id="actor")
+    updater.observe_success("actor", {"risk_level": "LOW", "risk_reasons": ["BASELINE_WARMUP"], "action": "appointments.mine"}, actor_context_id="actor")
     assert repo.writes == []
 
 
 def test_profile_updater_rejects_impossible_result_size_poisoning():
     class Repository:
         def __init__(self): self.writes = []
-        def load(self, actor_id): return None, []
-        def eligible_sample_count(self, actor_id): return 10
+        def load(self, actor_id, *, actor_context_id): return None, []
+        def eligible_sample_count(self, actor_id, *, actor_context_id): return 10
         def append_profile(self, *args): self.writes.append(args)
     repo = Repository()
     updater = ControlledProfileUpdater(repo)
     features = {"risk_level": "LOW", "risk_reasons": ["BASELINE_WARMUP"], "action": "appointments.mine"}
-    updater.observe_success("actor", features, result_size=101)
+    updater.observe_success("actor", features, result_size=101, actor_context_id="actor")
     assert repo.writes == []
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -67,6 +69,34 @@ class HealthcareRepository:
             return None
         return Actor(user_id=row[0], subject=row[1], display_name=row[2], roles=frozenset(row[4]))
 
+    def is_action_authorized(self, actor_id: str, action: str, resources: tuple[str, ...]) -> bool:
+        """Authorize only when the active database user has a role policy for every resource.
+
+        Role assignments and authorization rows are both read from PostgreSQL;
+        caller-supplied Actor.roles is deliberately not an authority here.
+        """
+        if not resources:
+            return False
+        with transaction(read_only=True) as conn:
+            row = conn.execute(
+                """SELECT NOT EXISTS (
+                       SELECT required.resource
+                       FROM unnest(%s::text[]) AS required(resource)
+                       WHERE NOT EXISTS (
+                           SELECT 1
+                           FROM healthcare.users u
+                           JOIN healthcare.user_roles ur ON ur.user_id = u.id
+                           JOIN healthcare.roles r ON r.id = ur.role_id
+                           JOIN security.action_role_policies p ON p.role_id = r.id
+                           WHERE u.id = %s AND u.status = 'active'
+                             AND p.action = %s AND p.resource = required.resource
+                             AND p.enabled
+                       )
+                   )""",
+                (list(resources), actor_id, action),
+            ).fetchone()
+        return bool(row[0])
+
     def write_decision(
         self, request_id: UUID, actor_id: UUID, decision: Decision, action: str, limit: int,
         *, query_fingerprint: str | None = None,
@@ -81,14 +111,23 @@ class HealthcareRepository:
             )
             conn.execute(
                 """SELECT security.append_risk_event(
-                       %s, %s, %s, %s, %s, %s, %s, %s, %s
+                       %s, %s, %s::numeric, %s::text, %s::text[], %s::jsonb,
+                       %s::text, %s::text, %s::integer
                    )""",
                 (request_id, actor_id, decision.risk_score, decision.state,
                  list(decision.reason_codes), Jsonb(features), decision.policy_version, decision.model_version,
                  decision.profile_version),
             )
 
-    def execute_action(self, action: str, actor_id: UUID, limit: int, from_date: date | None) -> list[dict[str, Any]]:
+    def execute_action(
+        self,
+        action: str,
+        actor_id: UUID,
+        limit: int,
+        from_date: date | None,
+        *,
+        actor_context_id: UUID,
+    ) -> list[dict[str, Any]]:
         query = self._queries.get(action)
         if query is None:
             raise ValueError("unsupported action cannot be executed")
@@ -100,22 +139,60 @@ class HealthcareRepository:
             params = (from_date, limit)
         else:
             params = (from_date, from_date, limit)
-        with transaction(read_only=True) as conn:
+        # The shared aggregate actions are fixed broker templates whose access
+        # is already authorized by the policy engine. All other reads stay
+        # inside the authenticated actor's RLS scope.
+        shared_read = action in {"appointments.by_status", "appointments.cardiology_today"}
+        with transaction(
+            read_only=True,
+            actor_context_id=actor_context_id,
+            allow_shared_healthcare_read=shared_read,
+        ) as conn:
             cursor = conn.execute(query, params)
             rows = cursor.fetchall()
             columns = [column.name for column in cursor.description or ()]
         return [{name: _json_value(value) for name, value in zip(columns, row)} for row in rows]
 
+    def execute_general_select(
+        self, validated_sql: str, actor_context_id: UUID, *, actor_scoped: bool,
+    ) -> list[dict[str, Any]]:
+        """Execute SQLGlot-canonical SQL only after the separate general validator passed."""
+        if not validated_sql or len(validated_sql.encode("utf-8")) > 16_384:
+            raise ValueError("validated query size is invalid")
+        statement = validated_sql
+        if actor_scoped:
+            if statement.lower().count("%(actor_id)s") != 1:
+                raise ValueError("actor scope placeholder is invalid")
+            parameters = {"actor_id": actor_context_id}
+        else:
+            if re.search(r"%\(\w+\)s|:\w+\b", statement):
+                raise ValueError("unexpected query parameter")
+            parameters = ()
+        with transaction(
+            read_only=True,
+            actor_context_id=actor_context_id,
+            allow_shared_healthcare_read=not actor_scoped,
+        ) as conn:
+            cursor = conn.execute(statement, parameters)
+            rows = cursor.fetchmany(101)
+            if len(rows) > 100:
+                raise ValueError("general query exceeded its row limit")
+            columns = [column.name for column in cursor.description or ()]
+        result = [{name: _json_value(value) for name, value in zip(columns, row)} for row in rows]
+        if len(json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > 1_048_576:
+            raise ValueError("general query exceeded its response byte limit")
+        return result
+
     def finish_execution(self, request_id: UUID, execution_status: str, duration_ms: int, row_count: int | None) -> None:
         with transaction() as conn:
             conn.execute(
-                "SELECT security.finish_query_log(%s, %s, %s, %s)",
+                "SELECT security.finish_query_log(%s, %s::text, %s::integer, %s::integer)",
                 (request_id, execution_status, duration_ms, row_count),
             )
 
-    def dashboard(self, actor_id: UUID) -> dict[str, Any]:
+    def dashboard(self, actor_id: UUID, *, actor_context_id: UUID) -> dict[str, Any]:
         """Return only the authenticated actor's persisted audit and baseline metadata."""
-        with transaction(read_only=True) as conn:
+        with transaction(read_only=True, actor_context_id=actor_context_id) as conn:
             history_rows = conn.execute("""SELECT q.request_id::text, q.created_at, q.decision,
                     q.execution_status, q.duration_ms, q.row_count, r.risk_score, r.reason_codes,
                     r.feature_snapshot, r.policy_version

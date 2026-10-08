@@ -3,28 +3,62 @@ BEGIN;
 INSERT INTO healthcare.roles(name, description) VALUES
  ('admin', 'Synthetic demo administrator'), ('doctor', 'Synthetic care provider'),
  ('nurse', 'Synthetic nursing staff'), ('billing', 'Synthetic billing operator'),
- ('analyst', 'Synthetic aggregate-only analyst')
+ ('billing_staff', 'Synthetic billing staff'), ('receptionist', 'Synthetic reception staff'),
+ ('analyst', 'Synthetic aggregate-only analyst'), ('unknown_role', 'Synthetic role without assigned permissions')
 ON CONFLICT (name) DO NOTHING;
 
 INSERT INTO healthcare.users(id, external_subject, display_name) VALUES
  ('10000000-0000-4000-8000-000000000001', 'demo:dr-ada', 'Dr Ada Example'),
  ('10000000-0000-4000-8000-000000000002', 'demo:nurse-lee', 'Nurse Lee Example'),
  ('10000000-0000-4000-8000-000000000003', 'demo:billing-sam', 'Sam Example Billing'),
- ('10000000-0000-4000-8000-000000000004', 'demo:analyst-riley', 'Riley Example Analyst')
+ ('10000000-0000-4000-8000-000000000004', 'demo:analyst-riley', 'Riley Example Analyst'),
+ ('10000000-0000-4000-8000-000000000005', 'demo:receptionist-jules', 'Jules Example Reception'),
+ ('10000000-0000-4000-8000-000000000006', 'demo:unconfigured-role', 'Synthetic Unconfigured Role'),
+ ('10000000-0000-4000-8000-000000000007', 'demo:dr-grace', 'Dr Grace Example')
 ON CONFLICT (external_subject) DO NOTHING;
 INSERT INTO healthcare.user_roles(user_id, role_id)
 SELECT u.id, r.id FROM (VALUES
  ('demo:dr-ada', 'doctor'), ('demo:nurse-lee', 'nurse'),
- ('demo:billing-sam', 'billing'), ('demo:analyst-riley', 'analyst')
+ ('demo:billing-sam', 'billing'), ('demo:billing-sam', 'billing_staff'),
+ ('demo:analyst-riley', 'analyst'), ('demo:receptionist-jules', 'receptionist'),
+ ('demo:unconfigured-role', 'unknown_role'), ('demo:dr-grace', 'doctor')
 ) AS x(subject, role_name)
 JOIN healthcare.users u ON u.external_subject = x.subject
 JOIN healthcare.roles r ON r.name = x.role_name
 ON CONFLICT DO NOTHING;
 
+-- Action/resource permissions preserve the supported policy matrix. Role identity
+-- comes from healthcare.roles and no medical-record permission is seeded: the
+-- current runtime broker deliberately has no such action or PostgreSQL grant.
+INSERT INTO security.action_role_policies(action, resource, role_id)
+SELECT policy.action, policy.resource, r.id
+FROM (VALUES
+    ('appointments.mine', 'appointments', 'doctor'),
+    ('appointments.mine', 'patients', 'doctor'),
+    ('appointments.mine', 'doctors', 'doctor'),
+    ('appointments.by_status', 'appointments', 'analyst'),
+    ('appointments.by_status', 'doctors', 'analyst'),
+    ('appointments.by_status', 'appointments', 'admin'),
+    ('appointments.by_status', 'doctors', 'admin'),
+    ('billing.summary', 'billing', 'billing'),
+    ('billing.summary', 'billing', 'billing_staff'),
+    ('billing.summary', 'billing', 'admin'),
+    ('appointments.cardiology_today', 'appointments', 'doctor'),
+    ('appointments.cardiology_today', 'doctors', 'doctor'),
+    ('appointments.cardiology_today', 'appointments', 'analyst'),
+    ('appointments.cardiology_today', 'doctors', 'analyst'),
+    ('appointments.cardiology_today', 'appointments', 'admin'),
+    ('appointments.cardiology_today', 'doctors', 'admin')
+) AS policy(action, resource, role_name)
+JOIN healthcare.roles r ON r.name = policy.role_name
+ON CONFLICT (action, resource, role_id) DO NOTHING;
+
 INSERT INTO healthcare.doctors(id, user_id, synthetic_license_number, specialty) VALUES
  ('20000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'SYN-LIC-ADA-001', 'Family Medicine'),
  ('20000000-0000-4000-8000-000000000002', NULL, 'SYN-LIC-JAM-002', 'Cardiology')
 ON CONFLICT (synthetic_license_number) DO NOTHING;
+UPDATE healthcare.doctors SET user_id = '10000000-0000-4000-8000-000000000007'
+WHERE synthetic_license_number = 'SYN-LIC-JAM-002' AND user_id IS NULL;
 
 INSERT INTO healthcare.patients(id, synthetic_patient_number, given_name, family_name, date_of_birth, sex_at_birth) VALUES
  ('30000000-0000-4000-8000-000000000001', 'SYN-PAT-0001', 'Jordan', 'Example', '1988-04-12', 'unknown'),

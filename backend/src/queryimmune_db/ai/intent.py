@@ -25,6 +25,7 @@ class QueryIntent(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    request_status: Literal["supported", "unsupported", "ambiguous"]
     operation: Literal["read", "insert", "update", "delete"]
     action: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_.-]*$")
     tables: list[str] = Field(min_length=1, max_length=8)
@@ -35,7 +36,7 @@ class QueryIntent(BaseModel):
     ordering: list[IntentOrder] = Field(max_length=8)
     limit: int = Field(ge=1, le=500)
     scope: Literal["own_records", "bounded", "aggregate", "all_records", "unknown"]
-    sensitivity_expectations: list[Literal["standard", "sensitive", "restricted"]] = Field(max_length=3)
+    sensitivity_expectations: list[Literal["standard", "sensitive", "restricted"]] = Field(min_length=1, max_length=3)
 
 
 class MismatchReason(BaseModel):
@@ -56,6 +57,10 @@ class SQLAnalysis(BaseModel):
     ordering: list[IntentOrder]
     limit: int | None
     canonical_fingerprint: str
+    canonical_sql: str | None = None
+    ast_node_count: int | None = None
+    ast_max_depth: int | None = None
+    join_count: int | None = None
 
 
 class ValidationResult(BaseModel):
