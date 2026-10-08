@@ -368,6 +368,8 @@ def test_demo_console_is_served_same_origin_and_dashboard_requires_authenticatio
         dashboard = client.get("/api/v1/dashboard")
     assert page.status_code == 200 and "Query intelligence" in page.text
     assert script.status_code == 200 and "api/v1/nl-requests" in script.text
+    assert "parseApiResponse" in script.text
+    assert script.headers["cache-control"] == "no-store, max-age=0"
     assert dashboard.status_code == 401
 
 

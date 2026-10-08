@@ -19,6 +19,9 @@
     let response;
     try { response = await fetch(path, { ...options, headers }); }
     catch { throw new Error('Request failed. Check your connection and try again.'); }
+    return parseApiResponse(path, response);
+  }
+  async function parseApiResponse(path, response) {
     // Read the body before interpreting the status: BLOCK and REVIEW are valid
     // security decisions even though their HTTP statuses are not 2xx success.
     const body = await response.json().catch(() => null);
@@ -190,18 +193,29 @@
     }
   }
   async function runQuery() {
-    await demoConfigurationReady;
     const prompt = $('query-input').value.trim();
     if (prompt.length < 3) { toast('Enter a natural-language request first.'); return; }
     if (!token()) { tokenDialog.showModal(); toast('Connect an API token before submitting.'); return; }
     const button = $('run-button'); button.disabled = true; button.querySelector('span').textContent = 'Evaluating request…';
     try {
+      clearPreviousDecision();
+      clearToast();
+      await demoConfigurationReady;
       const payload = { request: prompt };
       if (demoMode && selectedScenario) payload.demo_scenario = selectedScenario;
       const result = await api('/api/v1/nl-requests', { method: 'POST', body: JSON.stringify(payload) });
       showDecision(result); await refreshDashboard();
     } catch (error) { toast(error.message); }
     finally { button.disabled = false; button.querySelector('span').textContent = 'Run security check'; }
+  }
+  function clearPreviousDecision() {
+    $('decision-section').hidden = true;
+    $('analysis-section').hidden = true;
+    $('results-section').hidden = true;
+  }
+  function clearToast() {
+    $('toast').textContent = '';
+    $('toast').classList.remove('show');
   }
 
   $('run-button').addEventListener('click', runQuery);

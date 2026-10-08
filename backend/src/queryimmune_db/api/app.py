@@ -246,6 +246,18 @@ def _audit_nl_failure(request_id, actor, repository, response, model_version: st
 
 
 WEB_ROOT = project_root() / "web"
+
+
+@app.get("/static/app.js", include_in_schema=False)
+def frontend_script() -> FileResponse:
+    # Always fetch the demo's current frontend after an API image rebuild.
+    return FileResponse(
+        WEB_ROOT / "app.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
 app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
 
 

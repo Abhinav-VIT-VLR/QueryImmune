@@ -54,8 +54,9 @@ function setup(nlResponse) {
   const fetch = async path => {
     calls.push(path);
     if (path === '/api/v1/nl-requests') {
-      if (nlResponse instanceof Error) throw nlResponse;
-      return nlResponse;
+      const nextResponse = Array.isArray(nlResponse) ? nlResponse.shift() : nlResponse;
+      if (nextResponse instanceof Error) throw nextResponse;
+      return nextResponse;
     }
     if (path === '/health/ready') return response(200, { status: 'ok' });
     if (path === '/api/v1/demo/config') return response(200, { enabled: false });
@@ -93,6 +94,20 @@ async function submit(nlResponse) {
   return env;
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  throw new Error('Timed out waiting for the request to start');
+}
+
 test('200 ALLOW renders the normal decision and result', async () => {
   const env = await submit(response(200, decision('allow', { results: [{ count: 2 }], row_count: 1 })));
   assert.equal(env.get('decision-title').textContent, 'ALLOW');
@@ -116,6 +131,40 @@ test('403 structured BLOCK renders risk details and confirms no execution', asyn
   assert.match(env.get('decision-message').textContent, /not executed/);
   assert.equal(env.get('risk-score').textContent, '72.0 / 100');
   assert.deepEqual(env.get('decision-reasons').childNodes.map(chip => chip.textContent), ['TEST_REASON', 'TEST_SIGNAL']);
+  assert.equal(env.get('results-section').hidden, true);
+});
+
+test('403 BLOCK replaces a prior ALLOW and never shows the generic status toast', async () => {
+  const pendingResponse = deferred();
+  const env = setup([response(200, decision('allow', { results: [{ count: 2 }], row_count: 1 })), pendingResponse.promise]);
+  await env.get('run-button').handlers.click();
+  assert.equal(env.get('decision-title').textContent, 'ALLOW');
+  assert.equal(env.get('results-section').hidden, false);
+  env.get('toast').textContent = 'Request failed (403)';
+  env.get('toast').classList.add('show');
+  const request = env.get('run-button').handlers.click();
+  await waitFor(() => env.calls.filter(path => path === '/api/v1/nl-requests').length === 2);
+  assert.equal(env.get('decision-section').hidden, true);
+  assert.equal(env.get('results-section').hidden, true);
+  pendingResponse.resolve(response(403, decision('block')));
+  await request;
+  assert.equal(env.get('decision-title').textContent, 'BLOCK');
+  assert.equal(env.get('decision-section').hidden, false);
+  assert.notEqual(env.get('toast').textContent, 'Request failed (403)');
+});
+
+test('202 REVIEW replaces a prior ALLOW and states that execution did not happen', async () => {
+  const pendingResponse = deferred();
+  const env = setup([response(200, decision('allow', { results: [{ count: 2 }], row_count: 1 })), pendingResponse.promise]);
+  await env.get('run-button').handlers.click();
+  const request = env.get('run-button').handlers.click();
+  await waitFor(() => env.calls.filter(path => path === '/api/v1/nl-requests').length === 2);
+  assert.equal(env.get('decision-section').hidden, true);
+  pendingResponse.resolve(response(202, decision('review')));
+  await request;
+  assert.equal(env.get('decision-title').textContent, 'REVIEW');
+  assert.match(env.get('decision-message').textContent, /not executed/);
+  assert.match(env.get('decision-message').textContent, /Human review required/);
   assert.equal(env.get('results-section').hidden, true);
 });
 
