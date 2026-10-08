@@ -16,13 +16,40 @@
     const headers = { ...(options.headers || {}) };
     if (token()) headers.Authorization = `Bearer ${token()}`;
     if (options.body) headers['Content-Type'] = 'application/json';
-    const response = await fetch(path, { ...options, headers });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message = body?.error?.message || body?.detail || `Request failed (${response.status})`;
-      throw new Error(typeof message === 'string' ? message : 'Request was denied');
+    let response;
+    try { response = await fetch(path, { ...options, headers }); }
+    catch { throw new Error('Request failed. Check your connection and try again.'); }
+    // Read the body before interpreting the status: BLOCK and REVIEW are valid
+    // security decisions even though their HTTP statuses are not 2xx success.
+    const body = await response.json().catch(() => null);
+    const decisionBody = path === '/api/v1/nl-requests' ? structuredDecisionForStatus(body, response.status) : null;
+    if (decisionBody) {
+      return decisionBody;
     }
+    if (!response.ok) {
+      const detail = body?.error?.message || body?.detail || body?.message;
+      const message = errorMessage(detail);
+      if (response.status === 401) throw new Error(message || 'Authentication failed. Check your API token.');
+      if (response.status === 403) throw new Error(message || 'You are not authorized to submit this request.');
+      if (response.status === 422) throw new Error(message || 'The request failed validation.');
+      if (response.status >= 500) throw new Error(message || `Server error (${response.status}). Please try again.`);
+      throw new Error(message || `Request failed (${response.status})`);
+    }
+    if (body === null) throw new Error('The server returned an unreadable response.');
     return body;
+  }
+  function errorMessage(detail) {
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) return detail.map(item => item?.msg || item?.message || String(item)).join('; ');
+    if (detail && typeof detail === 'object') return detail.message || detail.msg || '';
+    return '';
+  }
+  function structuredDecisionForStatus(body, status) {
+    if (!body || typeof body !== 'object' || !Array.isArray(body.reason_codes)) return null;
+    const decision = String(body.decision || '').toLowerCase();
+    const expected = { 200: 'allow', 202: 'review', 403: 'block' }[status];
+    if (!expected || decision !== expected) return null;
+    return { ...body, decision };
   }
   function setDb(status) {
     const ready = status === 'ok';
@@ -57,6 +84,12 @@
     const reasonBox = $('decision-reasons'); reasonBox.replaceChildren();
     if (!reasons.length) addChip(reasonBox, 'No additional risk reasons');
     else reasons.forEach(code => addChip(reasonBox, code));
+    const signals = result.signals || result.risk_analysis?.signals || [];
+    if (Array.isArray(signals)) signals.forEach(signal => addChip(reasonBox, typeof signal === 'string' ? signal : signal.name || signal.code || JSON.stringify(signal)));
+    else if (signals && typeof signals === 'object') Object.entries(signals).forEach(([name, value]) => addChip(reasonBox, `${name}: ${value}`));
+    if (decision === 'review' || decision === 'block') {
+      $('decision-message').textContent = `${result.message || 'Decision recorded by QueryImmune policy.'} ${decision === 'review' ? 'Human review required; this request was not executed.' : 'This request was not executed.'}`;
+    }
 
     const intent = result.intent || {};
     $('intent-operation').textContent = intent.operation || '—';
