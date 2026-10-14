@@ -14,14 +14,16 @@ INSERT INTO healthcare.users(id, external_subject, display_name) VALUES
  ('10000000-0000-4000-8000-000000000004', 'demo:analyst-riley', 'Riley Example Analyst'),
  ('10000000-0000-4000-8000-000000000005', 'demo:receptionist-jules', 'Jules Example Reception'),
  ('10000000-0000-4000-8000-000000000006', 'demo:unconfigured-role', 'Synthetic Unconfigured Role'),
- ('10000000-0000-4000-8000-000000000007', 'demo:dr-grace', 'Dr Grace Example')
+ ('10000000-0000-4000-8000-000000000007', 'demo:dr-grace', 'Dr Grace Example'),
+ ('10000000-0000-4000-8000-000000000008', 'demo:admin', 'Synthetic Demo Administrator')
 ON CONFLICT (external_subject) DO NOTHING;
 INSERT INTO healthcare.user_roles(user_id, role_id)
 SELECT u.id, r.id FROM (VALUES
  ('demo:dr-ada', 'doctor'), ('demo:nurse-lee', 'nurse'),
  ('demo:billing-sam', 'billing'), ('demo:billing-sam', 'billing_staff'),
  ('demo:analyst-riley', 'analyst'), ('demo:receptionist-jules', 'receptionist'),
- ('demo:unconfigured-role', 'unknown_role'), ('demo:dr-grace', 'doctor')
+ ('demo:unconfigured-role', 'unknown_role'), ('demo:dr-grace', 'doctor'),
+ ('demo:admin', 'admin')
 ) AS x(subject, role_name)
 JOIN healthcare.users u ON u.external_subject = x.subject
 JOIN healthcare.roles r ON r.name = x.role_name
@@ -48,7 +50,8 @@ FROM (VALUES
     ('appointments.cardiology_today', 'appointments', 'analyst'),
     ('appointments.cardiology_today', 'doctors', 'analyst'),
     ('appointments.cardiology_today', 'appointments', 'admin'),
-    ('appointments.cardiology_today', 'doctors', 'admin')
+    ('appointments.cardiology_today', 'doctors', 'admin'),
+    ('appointments.admin_crud', 'appointments', 'admin')
 ) AS policy(action, resource, role_name)
 JOIN healthcare.roles r ON r.name = policy.role_name
 ON CONFLICT (action, resource, role_id) DO NOTHING;

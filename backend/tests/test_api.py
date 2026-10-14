@@ -366,13 +366,56 @@ def test_client_cannot_choose_database_actor_context():
         })
 
 
-def test_health_and_openapi_endpoints():
+def test_health_and_openapi_endpoints(monkeypatch):
+    from queryimmune_db.api import app as app_module
+
+    monkeypatch.setattr(app_module, "database_health", lambda: {"status": "ok"})
+    monkeypatch.setattr(app_module, "orm_database_available", lambda: True)
     with TestClient(app) as client:
         assert client.get("/health/live").json() == {"status": "ok"}
+        readiness = client.get("/health/ready")
+        assert readiness.status_code == 200
+        assert readiness.json() == {"status": "ok"}
         schema = client.get("/openapi.json").json()
     request_schema = schema["paths"]["/api/v1/requests"]["post"]["requestBody"]["content"]["application/json"]["schema"]
     assert request_schema["$ref"].endswith("ExecutionRequest")
     assert "sql" not in schema["components"]["schemas"]["ExecutionRequest"].get("properties", {})
+
+
+@pytest.mark.parametrize(
+    ("runtime_status", "orm_available"),
+    [("unavailable", True), ("ok", False)],
+)
+def test_readiness_returns_503_when_a_database_dependency_is_unavailable(
+    monkeypatch, runtime_status, orm_available,
+):
+    from queryimmune_db.api import app as app_module
+
+    monkeypatch.setattr(app_module, "database_health", lambda: {"status": runtime_status})
+    monkeypatch.setattr(app_module, "orm_database_available", lambda: orm_available)
+    with TestClient(app) as client:
+        response = client.get("/health/ready")
+        liveness = client.get("/health/live")
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
+    assert "DATABASE_URL" not in response.text
+    assert "DATABASE_ORM_ADMIN_URL" not in response.text
+    assert liveness.status_code == 200
+    assert liveness.json() == {"status": "ok"}
+
+
+def test_liveness_does_not_probe_database_dependencies(monkeypatch):
+    from queryimmune_db.api import app as app_module
+
+    def unexpected_probe():
+        raise AssertionError("liveness must not query database dependencies")
+
+    monkeypatch.setattr(app_module, "database_health", unexpected_probe)
+    monkeypatch.setattr(app_module, "orm_database_available", unexpected_probe)
+    with TestClient(app) as client:
+        response = client.get("/health/live")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
 
 
 def test_demo_console_is_served_same_origin_and_dashboard_requires_authentication():
@@ -392,6 +435,24 @@ def test_execution_route_requires_authentication_and_returns_request_id():
         response = client.post("/api/v1/requests", json={"action": "appointments.mine"})
     assert response.status_code == 401
     assert UUID(response.headers["x-request-id"])
+
+
+def test_admin_route_rejects_missing_and_invalid_bearer_credentials(monkeypatch):
+    monkeypatch.setenv("AUTH_JWT_HS256_SECRET", "a" * 64)
+    app.dependency_overrides.clear()
+    try:
+        with TestClient(app) as client:
+            missing = client.get("/api/v1/admin/appointments")
+            invalid = client.get(
+                "/api/v1/admin/appointments",
+                headers={"Authorization": "Bearer invalid.token.value"},
+            )
+        assert missing.status_code == 401
+        assert invalid.status_code == 401
+        assert missing.headers["www-authenticate"] == "Bearer"
+        assert invalid.headers["www-authenticate"] == "Bearer"
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_unhandled_errors_return_generic_message_with_request_id():
@@ -423,6 +484,105 @@ def test_demo_token_issuer_is_local_opt_in_and_uses_existing_verifier(monkeypatc
     monkeypatch.setenv("QUERYIMMUNE_DEMO_AUTH", "0")
     with pytest.raises(SystemExit):
         main()
+
+
+def _signed_test_token(secret: str, claims_json: str) -> str:
+    import base64
+    import hashlib
+    import hmac
+    import json
+
+    def segment(value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+    header = segment(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    claims = segment(claims_json.encode())
+    signed = f"{header}.{claims}"
+    signature = hmac.new(secret.encode(), signed.encode("ascii"), hashlib.sha256).digest()
+    return f"{signed}.{segment(signature)}"
+
+
+def test_jwt_authenticator_rejects_malformed_claims_and_encodings(monkeypatch):
+    import json
+    import time
+
+    from queryimmune_db.api.auth import Hs256Authenticator
+    from queryimmune_db.api.config import Settings
+
+    secret = "s" * 64
+    monkeypatch.setenv("AUTH_JWT_HS256_SECRET", secret)
+    monkeypatch.setenv("AUTH_JWT_ISSUER", "queryimmune-auth")
+    monkeypatch.setenv("AUTH_JWT_AUDIENCE", "queryimmune-api")
+    settings = Settings.from_env()
+    valid = {
+        "sub": "test:user",
+        "iss": settings.auth_issuer,
+        "aud": settings.auth_audience,
+        "iat": int(time.time()),
+        "exp": int(time.time()) + 60,
+    }
+    invalid_claims = [
+        {**valid, "exp": True},
+        {**valid, "exp": 10**400},
+        {**valid, "aud": ["queryimmune-api", 1]},
+        {**valid, "iat": int(time.time()) + 60},
+    ]
+    verifier = Hs256Authenticator(settings)
+    for claims in invalid_claims:
+        token = _signed_test_token(secret, json.dumps(claims, separators=(",", ":")))
+        with pytest.raises(ValueError):
+            verifier.subject_from_token(token)
+
+    duplicate_claim_token = _signed_test_token(
+        secret,
+        '{"sub":"first","sub":"second","iss":"queryimmune-auth",'
+        '"aud":"queryimmune-api","exp":' + str(int(time.time()) + 60) + "}",
+    )
+    with pytest.raises(ValueError):
+        verifier.subject_from_token(duplicate_claim_token)
+
+    with pytest.raises(ValueError):
+        verifier.subject_from_token("!.e30.signature")
+
+
+def test_authentication_resolves_subject_to_database_actor(monkeypatch):
+    import time
+
+    import json
+
+    from queryimmune_db.api.auth import get_current_actor
+    from queryimmune_db.api.config import Settings
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    secret = "s" * 64
+    monkeypatch.setenv("AUTH_JWT_HS256_SECRET", secret)
+    monkeypatch.setenv("AUTH_JWT_ISSUER", "queryimmune-auth")
+    monkeypatch.setenv("AUTH_JWT_AUDIENCE", "queryimmune-api")
+    settings = Settings.from_env()
+    token = _signed_test_token(
+        secret,
+        json.dumps(
+            {
+                "sub": "test:admin",
+                "iss": settings.auth_issuer,
+                "aud": settings.auth_audience,
+                "iat": int(time.time()),
+                "exp": int(time.time()) + 60,
+            },
+            separators=(",", ":"),
+        ),
+    )
+    expected = actor({"admin"})
+    observed = []
+
+    def resolve_subject(self, subject):
+        observed.append(subject)
+        return expected
+
+    monkeypatch.setattr(HealthcareRepository, "actor_by_subject", resolve_subject)
+    authenticated = get_current_actor(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token))
+    assert authenticated is expected
+    assert observed == ["test:admin"]
 
 
 @pytest.mark.database

@@ -23,6 +23,48 @@ def test_migration_has_required_entities_constraints_and_indexes() -> None:
     assert "grant insert, update, delete" not in migration
 
 
+def test_admin_appointment_migration_is_separate_restricted_and_audited():
+    migration = (ROOT / "migrations" / "013_admin_appointment_crud.sql").read_text(encoding="utf-8").lower()
+    assert "grant select, insert, update, delete on healthcare.appointments to qi_orm_admin" in migration
+    assert "appointments_orm_admin_insert" in migration
+    assert "security.orm_admin_actor_allowed()" in migration
+    assert "security.admin_audit_events" in migration
+    assert "appointments_admin_audit" in migration
+    assert "grant insert, update, delete on healthcare.appointments to qi_runtime" not in migration
+    seed = (ROOT / "seed" / "001_synthetic_healthcare.sql").read_text(encoding="utf-8").lower()
+    assert "appointments.admin_crud', 'appointments', 'admin'" in seed
+    assert "'demo:admin'" in seed
+
+
+def test_advanced_reporting_migration_adds_curated_views_function_and_indexes():
+    migration = (ROOT / "migrations" / "014_advanced_dbms_reporting.sql").read_text(encoding="utf-8").lower()
+    assert "create view security.query_execution_daily_summary" in migration
+    assert "create view security.risk_event_daily_summary" in migration
+    assert "create view healthcare.admin_appointment_report" in migration
+    assert "create view healthcare.admin_appointment_detail" in migration
+    assert "security_barrier = true" in migration
+    assert "where security.orm_admin_actor_allowed()" in migration
+    assert "grant select on security.query_execution_daily_summary" in migration
+    assert "grant select on healthcare.admin_appointment_report," in migration
+    assert "healthcare.admin_appointment_detail to qi_orm_admin" in migration
+    assert "create function security.admin_update_appointment_status" in migration
+    assert "update healthcare.appointments" in migration
+    assert "security invoker" in migration
+    assert "using errcode = '22023'" in migration
+    assert "using errcode = '42501'" in migration
+    assert "using errcode = 'p0002'" in migration
+    assert "grant execute on function security.admin_update_appointment_status(uuid, text) to qi_orm_admin" in migration
+    assert "create index query_logs_created_at_idx" in migration
+    assert "create index risk_events_created_at_idx" in migration
+    assert "create index appointments_scheduled_at_idx" in migration
+    demo = (ROOT / "sql" / "advanced_dbms_demo.sql").read_text(encoding="utf-8").lower()
+    for keyword in ("begin;", "commit;", "rollback;", "savepoint", "rollback to savepoint",
+                    "inner join", "left join", "right join", "having", "count(", "sum(",
+                    "avg(", "min(", "max(", "exists (", "insert into",
+                    "update healthcare.appointments", "delete from"):
+        assert keyword in demo
+
+
 def test_seed_is_synthetic_and_repeatable() -> None:
     seed = (ROOT / "seed" / "001_synthetic_healthcare.sql").read_text(encoding="utf-8").lower()
     assert "synthetic fixtures" in seed
@@ -218,4 +260,3 @@ def test_security_runtime_access_is_explicit_read_only_and_default_closed():
         finally:
             conn.execute(sql.SQL("DROP TABLE security.{}").format(sql.Identifier(probe_name)))
             conn.execute("RESET ROLE")
-
