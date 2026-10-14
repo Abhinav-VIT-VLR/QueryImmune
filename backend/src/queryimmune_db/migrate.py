@@ -13,7 +13,7 @@ from queryimmune_db.paths import project_root
 
 ROOT = project_root()
 MIGRATIONS = ROOT / "migrations"
-DATABASE_ROLES = ("qi_owner", "qi_runtime")
+DATABASE_ROLES = ("qi_owner", "qi_runtime", "qi_orm_admin")
 
 
 def admin_url() -> str:
@@ -82,6 +82,50 @@ def provision_runtime_role() -> None:
     print(f"provisioned runtime role {role_name}")
 
 
+def provision_orm_admin_role() -> None:
+    """Provision a distinct login for the narrowly scoped appointment ORM."""
+    password = os.environ.get("DATABASE_ORM_ADMIN_PASSWORD")
+    if not password:
+        raise RuntimeError("DATABASE_ORM_ADMIN_PASSWORD is required to provision the ORM admin login")
+    role_name = "queryimmune_orm_admin"
+    with psycopg.connect(admin_url(), autocommit=True, connect_timeout=5) as conn:
+        exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role_name,)).fetchone()
+        if not exists:
+            conn.execute(
+                sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION").format(
+                    sql.Identifier(role_name)
+                )
+            )
+        conn.execute(
+            sql.SQL("ALTER ROLE {} WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD {}").format(
+                sql.Identifier(role_name), sql.Literal(password)
+            )
+        )
+        memberships = conn.execute(
+            """SELECT granted.rolname
+               FROM pg_auth_members membership
+               JOIN pg_roles granted ON granted.oid = membership.roleid
+               WHERE membership.member = (SELECT oid FROM pg_roles WHERE rolname = %s)
+                 AND granted.rolname <> 'qi_orm_admin'""",
+            (role_name,),
+        ).fetchall()
+        for (membership,) in memberships:
+            conn.execute(
+                sql.SQL("REVOKE {} FROM {}").format(sql.Identifier(membership), sql.Identifier(role_name))
+            )
+        for object_type in ("TABLES", "SEQUENCES", "FUNCTIONS"):
+            conn.execute(
+                sql.SQL("REVOKE ALL PRIVILEGES ON ALL {} IN SCHEMA healthcare, security FROM {}").format(
+                    sql.SQL(object_type), sql.Identifier(role_name)
+                )
+            )
+        conn.execute(
+            sql.SQL("REVOKE ALL ON SCHEMA healthcare, security FROM {}").format(sql.Identifier(role_name))
+        )
+        conn.execute(sql.SQL("GRANT qi_orm_admin TO {}").format(sql.Identifier(role_name)))
+    print(f"provisioned ORM admin role {role_name}")
+
+
 def seed() -> None:
     with psycopg.connect(admin_url(), autocommit=True, connect_timeout=5) as conn:
         conn.execute((ROOT / "seed" / "001_synthetic_healthcare.sql").read_text(encoding="utf-8"))
@@ -99,6 +143,8 @@ def main() -> None:
         provision_database_roles()
     if command in ("provision-runtime", "setup"):
         provision_runtime_role()
+    if command == "setup":
+        provision_orm_admin_role()
     if command in ("seed", "setup"):
         seed()
 

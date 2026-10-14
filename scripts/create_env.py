@@ -15,6 +15,7 @@ def main() -> None:
     values = {
         "POSTGRES_PASSWORD": secrets.token_hex(32),
         "DATABASE_RUNTIME_PASSWORD": secrets.token_hex(32),
+        "DATABASE_ORM_ADMIN_PASSWORD": secrets.token_hex(32),
         "AUTH_JWT_HS256_SECRET": secrets.token_hex(32),
         "AUTH_JWT_ISSUER": "queryimmune-auth",
         "AUTH_JWT_AUDIENCE": "queryimmune-api",

@@ -10,6 +10,33 @@ docker compose --env-file .env -f infra/docker-compose.yml exec api python -m qu
 
 Paste it into the token field. This login is for local demo only.
 
+For the admin CRUD demonstration, issue a token for the synthetic admin:
+
+```powershell
+docker compose --env-file .env -f infra/docker-compose.yml exec api python -m queryimmune_db.api.dev_token --subject demo:admin
+```
+
+Use the printed token as `Authorization: Bearer <token>` for the authenticated
+appointment endpoints documented in [SETUP.md](SETUP.md). The admin token is
+only issued by this CLI in the explicitly enabled local demo container.
+
+Demonstrate the database-backed authorization boundary with these requests:
+
+```powershell
+$adminToken = docker compose --env-file .env -f infra/docker-compose.yml exec -T api python -m queryimmune_db.api.dev_token --subject demo:admin
+curl.exe -H "Authorization: Bearer $adminToken" http://localhost:8000/api/v1/admin/appointments
+
+$doctorToken = docker compose --env-file .env -f infra/docker-compose.yml exec -T api python -m queryimmune_db.api.dev_token --subject demo:dr-ada
+curl.exe -i -H "Authorization: Bearer $doctorToken" http://localhost:8000/api/v1/admin/appointments
+```
+
+The administrator request is authorized by the `appointments.admin_crud`
+database policy. The doctor token is validly authenticated but receives `403`
+because the doctor role is not granted that administrative action. Requests
+without a bearer token or with an invalid/expired token receive `401`. Token
+generation remains a local opt-in CLI operation; the API exposes no token
+issuance endpoint.
+
 ## Scenarios
 
 Select a preset or enter the matching request:
@@ -28,3 +55,5 @@ The results, decision explanation, history, profile, and workload chart come fro
 - Liveness: <http://localhost:8000/health/live>
 - Database readiness: <http://localhost:8000/health/ready>
 - Dashboard API: `/api/v1/dashboard` (authenticated, actor-scoped)
+- Appointment CRUD: `/api/v1/admin/appointments` (database-authorized admin role, ORM-only, audited)
+- Appointment audit: `/api/v1/admin/appointments/audit` (paginated, admin-only)

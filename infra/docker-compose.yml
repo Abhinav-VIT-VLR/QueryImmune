@@ -23,6 +23,7 @@ services:
     environment:
       DATABASE_ADMIN_URL: postgresql://queryimmune_bootstrap:${POSTGRES_PASSWORD}@postgres:5432/queryimmune
       DATABASE_RUNTIME_PASSWORD: ${DATABASE_RUNTIME_PASSWORD:?Run python scripts/create_env.py first}
+      DATABASE_ORM_ADMIN_PASSWORD: ${DATABASE_ORM_ADMIN_PASSWORD:?Run python scripts/create_env.py first}
     depends_on:
       postgres:
         condition: service_healthy
@@ -35,6 +36,7 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       DATABASE_URL: postgresql://queryimmune_runtime:${DATABASE_RUNTIME_PASSWORD}@postgres:5432/queryimmune
+      DATABASE_ORM_ADMIN_URL: postgresql+psycopg://queryimmune_orm_admin:${DATABASE_ORM_ADMIN_PASSWORD}@postgres:5432/queryimmune
       AUTH_JWT_HS256_SECRET: ${AUTH_JWT_HS256_SECRET:?Run python scripts/create_env.py first}
       AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-queryimmune-auth}
       AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-queryimmune-api}
@@ -54,7 +56,7 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"]
+      test: ["CMD", "python", "-c", "import json, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2); assert json.load(response).get('status') == 'ok'"]
       interval: 10s
       timeout: 3s
       retries: 8
