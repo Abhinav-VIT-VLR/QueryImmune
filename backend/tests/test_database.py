@@ -9,6 +9,18 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def read_migration(filename: str) -> str:
+    """Read a required migration and report a clear error if it is missing."""
+    path = ROOT / "migrations" / filename
+    if not path.is_file():
+        pytest.fail(
+            f"Required migration is missing: {path}. "
+            "Restore this migration from the original QueryImmune project; "
+            "do not remove the migration test to hide the missing file."
+        )
+    return path.read_text(encoding="utf-8").lower()
+
+
 def test_migration_has_required_entities_constraints_and_indexes() -> None:
     migration = (ROOT / "migrations" / "001_database_foundation.sql").read_text(encoding="utf-8").lower()
     for table in ("users", "roles", "user_roles", "patients", "doctors", "appointments", "medical_records", "billing", "query_logs", "behavior_profiles", "risk_events"):
@@ -219,3 +231,65 @@ def test_security_runtime_access_is_explicit_read_only_and_default_closed():
             conn.execute(sql.SQL("DROP TABLE security.{}").format(sql.Identifier(probe_name)))
             conn.execute("RESET ROLE")
 
+
+
+def test_admin_appointment_migration_is_separate_restricted_and_audited():
+    migration = read_migration("013_admin_appointment_crud.sql")
+    assert "grant select, insert, update, delete on healthcare.appointments to qi_orm_admin" in migration
+    assert "appointments_orm_admin_insert" in migration
+    assert "security.orm_admin_actor_allowed()" in migration
+    assert "security.admin_audit_events" in migration
+    assert "appointments_admin_audit" in migration
+    assert "grant insert, update, delete on healthcare.appointments to qi_runtime" not in migration
+    seed = (ROOT / "seed" / "001_synthetic_healthcare.sql").read_text(encoding="utf-8").lower()
+    assert "appointments.admin_crud', 'appointments', 'admin'" in seed
+    assert "'demo:admin'" in seed
+
+
+def test_advanced_reporting_migration_adds_curated_views_function_and_indexes():
+    migration = read_migration("014_advanced_dbms_reporting.sql")
+    assert "create view security.query_execution_daily_summary" in migration
+    assert "create view security.risk_event_daily_summary" in migration
+    assert "create view healthcare.admin_appointment_report" in migration
+    assert "create view healthcare.admin_appointment_detail" in migration
+    assert "security_barrier = true" in migration
+    assert "where security.orm_admin_actor_allowed()" in migration
+    assert "grant select on security.query_execution_daily_summary" in migration
+    assert "grant select on healthcare.admin_appointment_report," in migration
+    assert "healthcare.admin_appointment_detail to qi_orm_admin" in migration
+    assert "create function security.admin_update_appointment_status" in migration
+    assert "update healthcare.appointments" in migration
+    assert "security invoker" in migration
+    assert "using errcode = '22023'" in migration
+    assert "using errcode = '42501'" in migration
+    assert "using errcode = 'p0002'" in migration
+    compact = "".join(migration.split())
+    assert "grantexecuteonfunctionsecurity.admin_update_appointment_status(uuid,text)toqi_orm_admin" in compact
+    assert "create index query_logs_created_at_idx" in migration
+    assert "create index risk_events_created_at_idx" in migration
+    assert "create index appointments_scheduled_at_idx" in migration
+    demo = (ROOT / "sql" / "advanced_dbms_demo.sql").read_text(encoding="utf-8").lower()
+    for keyword in ("begin;", "commit;", "rollback;", "savepoint", "rollback to savepoint",
+                    "inner join", "left join", "right join", "having", "count(", "sum(",
+                    "avg(", "min(", "max(", "exists (", "insert into",
+                    "security.admin_update_appointment_status", "delete from"):
+        assert keyword in demo
+
+
+
+def test_stored_procedure_migration_is_restricted_and_reuses_validation():
+    migration = read_migration(
+        "015_admin_appointment_status_procedure.sql"
+    )
+    # Remove all whitespace so multiline SQL formatting does not affect assertions.
+    compact = "".join(migration.split())
+
+    assert (
+        "createprocedure"
+        "security.admin_update_appointment_status_proc("
+    ) in compact
+    assert (
+        "performsecurity.admin_update_appointment_status"
+        "(p_appointment_id,p_new_status);"
+    ) in compact
+    assert "securityinvoker" in compact

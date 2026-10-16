@@ -57,7 +57,7 @@ def test_runtime_login_inherits_the_canonical_privilege_role():
     foundation = (REPOSITORY_ROOT / "backend" / "migrations" / "001_database_foundation.sql").read_text(encoding="utf-8")
     compose = (REPOSITORY_ROOT / "infra" / "docker-compose.yml").read_text(encoding="utf-8")
 
-    assert 'DATABASE_ROLES = ("qi_owner", "qi_runtime")' in migrate_source
+    assert 'DATABASE_ROLES = ("qi_owner", "qi_runtime", "qi_orm_admin")' in migrate_source
     assert 'os.environ.get("DATABASE_RUNTIME_ROLE", "queryimmune_runtime")' in migrate_source
     assert 'GRANT qi_runtime TO {}' in migrate_source
     assert "CREATE ROLE qi_runtime NOLOGIN" in foundation

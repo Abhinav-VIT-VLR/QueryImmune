@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import argparse
 import os
+from uuid import uuid4
 
 import psycopg
 from psycopg import sql
 
 from queryimmune_db import env as _env  # noqa: F401
 from queryimmune_db.paths import project_root
+from queryimmune_db.orm.session import create_session_factory, session_scope
 
 ROOT = project_root()
 MIGRATIONS = ROOT / "migrations"
-DATABASE_ROLES = ("qi_owner", "qi_runtime")
+DATABASE_ROLES = ("qi_owner", "qi_runtime", "qi_orm_admin")
+SEED_ACTOR_ID = "10000000-0000-4000-8000-000000000008"
 
 
 def admin_url() -> str:
@@ -45,7 +48,21 @@ def provision_database_roles() -> None:
                         sql.Identifier(role_name)
                     )
                 )
-    print("provisioned database privilege roles")
+        # Verify the roles exist before any SQL migration can GRANT to them.
+        existing_roles = {
+            row[0]
+            for row in conn.execute(
+                "SELECT rolname FROM pg_roles WHERE rolname = ANY(%s)",
+                (list(DATABASE_ROLES),),
+            ).fetchall()
+        }
+        missing_roles = sorted(set(DATABASE_ROLES) - existing_roles)
+        if missing_roles:
+            raise RuntimeError(
+                "Failed to provision required PostgreSQL privilege roles: "
+                + ", ".join(missing_roles)
+            )
+    print("provisioned database privilege roles: " + ", ".join(DATABASE_ROLES))
 
 
 def apply_migrations() -> None:
