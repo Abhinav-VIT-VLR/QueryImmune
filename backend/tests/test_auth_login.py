@@ -58,7 +58,7 @@ def test_login_rejects_invalid_credentials_without_database_lookup(monkeypatch):
     })
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid username or password"
+    assert response.json()["error"]["message"] == "Invalid username or password"
 
 
 def test_password_hash_is_salted_and_verified():
