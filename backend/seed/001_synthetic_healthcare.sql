@@ -1,5 +1,4 @@
 -- Fully synthetic fixtures. All names and identifiers below are invented.
-BEGIN;
 INSERT INTO healthcare.roles(name, description) VALUES
  ('admin', 'Synthetic demo administrator'), ('doctor', 'Synthetic care provider'),
  ('nurse', 'Synthetic nursing staff'), ('billing', 'Synthetic billing operator'),
@@ -94,4 +93,3 @@ SELECT u.id, 1, now() - interval '90 days', now(), 12, 0.65,
        '{"actions":["appointments.mine","appointments.cardiology_today"],"tables":["appointments","patients","doctors"],"columns":["scheduled_at","status","reason_category","synthetic_patient_number","specialty","patient_id"],"operations":["read"],"scopes":["own_records","aggregate"],"sensitivities":["standard"],"roles":["doctor"],"signatures":["appointments.mine:appointments,doctors,patients:reason_category,scheduled_at,specialty,status,synthetic_patient_number::own_records:limit-standard","appointments.cardiology_today:appointments,doctors:patient_id:count:aggregate:limit-small"],"query_structure":["appointments.mine:appointments,doctors,patients:reason_category,scheduled_at,specialty,status,synthetic_patient_number::own_records:limit-standard"],"active_hours":["0","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","23"],"result_size_max":8,"frequency_sample_count":12}'::jsonb, 'seeded'
 FROM healthcare.users u WHERE u.external_subject = 'demo:dr-ada'
 ON CONFLICT (actor_id, profile_version) DO NOTHING;
-COMMIT;

@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import argparse
 import os
+from uuid import uuid4
 
 import psycopg
 from psycopg import sql
 
 from queryimmune_db import env as _env  # noqa: F401
 from queryimmune_db.paths import project_root
+from queryimmune_db.orm.session import create_session_factory, session_scope
 
 ROOT = project_root()
 MIGRATIONS = ROOT / "migrations"
 DATABASE_ROLES = ("qi_owner", "qi_runtime", "qi_orm_admin")
+SEED_ACTOR_ID = "10000000-0000-4000-8000-000000000008"
 
 
 def admin_url() -> str:
@@ -126,9 +129,28 @@ def provision_orm_admin_role() -> None:
     print(f"provisioned ORM admin role {role_name}")
 
 
+def _execute_seed(seed_sql: str) -> None:
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+
+    engine = create_engine(
+        make_url(admin_url()).set(drivername="postgresql+psycopg"),
+        connect_args={"connect_timeout": 5},
+    )
+    try:
+        with session_scope(
+            create_session_factory(engine),
+            actor_id=SEED_ACTOR_ID,
+            request_id=str(uuid4()),
+        ) as session:
+            session.connection().exec_driver_sql(seed_sql)
+    finally:
+        engine.dispose()
+
+
 def seed() -> None:
-    with psycopg.connect(admin_url(), autocommit=True, connect_timeout=5) as conn:
-        conn.execute((ROOT / "seed" / "001_synthetic_healthcare.sql").read_text(encoding="utf-8"))
+    seed_sql = (ROOT / "seed" / "001_synthetic_healthcare.sql").read_text(encoding="utf-8")
+    _execute_seed(seed_sql)
     print("loaded deterministic synthetic healthcare fixtures")
 
 
