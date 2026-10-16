@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: queryimmune
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    autoDeployTrigger: "off"
+    healthCheckPath: /health/ready
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_ORM_ADMIN_URL
+        sync: false
+      - key: AUTH_JWT_HS256_SECRET
+        sync: false
+      - key: AUTH_LOGIN_USERNAME
+        sync: false
+      - key: AUTH_LOGIN_PASSWORD_HASH
+        sync: false
+      - key: AUTH_LOGIN_SUBJECT
+        sync: false
+      - key: AUTH_JWT_ISSUER
+        value: queryimmune-auth
+      - key: AUTH_JWT_AUDIENCE
+        value: queryimmune-api
+      - key: AI_PROVIDER
+        value: demo
+      - key: QUERYIMMUNE_DEMO_AUTH
+        value: "0"

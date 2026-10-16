@@ -1,7 +1,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const tokenKey = 'queryimmune_api_token';
-  const tokenDialog = $('token-dialog');
+  const loginDialog = $('login-dialog');
   const token = () => sessionStorage.getItem(tokenKey) || '';
   let demoMode = false;
   let selectedScenario = null;
@@ -14,13 +14,14 @@
     clearTimeout(toastTimer); toastTimer = setTimeout(() => node.classList.remove('show'), 2800);
   }
   async function api(path, options = {}) {
+    const { authenticated = true, ...requestOptions } = options;
     const headers = { ...(options.headers || {}) };
-    if (token()) headers.Authorization = `Bearer ${token()}`;
-    if (options.body) headers['Content-Type'] = 'application/json';
+    if (authenticated && token()) headers.Authorization = `Bearer ${token()}`;
+    if (requestOptions.body) headers['Content-Type'] = 'application/json';
     let response;
-    try { response = await fetch(path, { ...options, headers }); }
-    catch { throw apiError('Request failed. Check your connection and try again.', { path, method: options.method || 'GET', status: null }); }
-    return parseApiResponse(path, response, options.method || 'GET');
+    try { response = await fetch(path, { ...requestOptions, headers }); }
+    catch { throw apiError('Request failed. Check your connection and try again.', { path, method: requestOptions.method || 'GET', status: null }); }
+    return parseApiResponse(path, response, requestOptions.method || 'GET');
   }
   async function parseApiResponse(path, response, method) {
     // Read the body before interpreting the status: BLOCK and REVIEW are valid
@@ -202,22 +203,36 @@
     if (tags.childNodes.length) host.append(tags);
   }
   async function refreshDashboard() {
-    if (!token()) { $('identity-status').textContent = 'Token required'; return; }
+    if (!token()) {
+      $('current-user-name').textContent = 'Signed out';
+      $('identity-status').textContent = 'Sign in to continue';
+      $('login-open').hidden = false;
+      $('logout-button').hidden = true;
+      return;
+    }
     try {
+      const user = await api('/api/v1/auth/me');
       const data = await api('/api/v1/dashboard');
-      $('identity-status').textContent = 'Connected · authenticated';
+      $('current-user-name').textContent = user.display_name;
+      $('identity-status').textContent = (user.roles || []).join(', ');
+      $('login-open').hidden = true;
+      $('logout-button').hidden = false;
       $('auth-hint').textContent = 'Connected to the authenticated API. Decisions, history, and profiles are sourced from PostgreSQL.';
       renderHistory(data.history); renderWorkload(data.workload); renderProfile(data.behavior_profile);
     } catch (error) {
+      $('current-user-name').textContent = 'Authentication unavailable';
       $('identity-status').textContent = 'Authentication unavailable';
+      $('login-open').hidden = false;
+      $('logout-button').hidden = true;
       $('auth-hint').textContent = error.message;
+      renderHistory([]); renderWorkload([]); renderProfile(null);
       console.warn('Dashboard refresh failed', { path: error.path || '/api/v1/dashboard', method: error.method || 'GET', status: error.status, message: error.message });
     }
   }
   async function runQuery() {
     const prompt = $('query-input').value.trim();
     if (prompt.length < 3) { toast('Enter a natural-language request first.'); return; }
-    if (!token()) { tokenDialog.showModal(); toast('Connect an API token before submitting.'); return; }
+    if (!token()) { loginDialog.showModal(); toast('Sign in before submitting.'); return; }
     const button = $('run-button'); button.disabled = true; button.querySelector('span').textContent = 'Evaluating request…';
     try {
       clearPreviousDecision();
@@ -247,6 +262,33 @@
     $('toast').classList.remove('show');
   }
 
+  async function signIn(event) {
+    event.preventDefault();
+    $('login-error').textContent = '';
+    try {
+      const result = await api('/api/v1/auth/login', {
+        method: 'POST', authenticated: false,
+        body: JSON.stringify({ username: $('login-username').value, password: $('login-password').value }),
+      });
+      sessionStorage.setItem(tokenKey, result.access_token);
+      $('login-password').value = '';
+      await refreshDashboard();
+      loginDialog.close();
+      toast('Signed in.');
+    } catch (error) {
+      $('login-error').textContent = error.message;
+    }
+  }
+
+  function signOut() {
+    sessionStorage.removeItem(tokenKey);
+    $('login-password').value = '';
+    clearPreviousDecision();
+    renderHistory([]); renderWorkload([]); renderProfile(null);
+    $('auth-hint').textContent = 'Sign in to submit a request and view dashboard data.';
+    refreshDashboard();
+  }
+
   $('run-button').addEventListener('click', runQuery);
   $('query-input').addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') runQuery(); });
   $('query-input').addEventListener('input', () => {
@@ -256,8 +298,12 @@
     document.querySelectorAll('[data-prompt]').forEach(item => item.classList.remove('selected'));
   });
   document.querySelectorAll('[data-prompt]').forEach(button => button.addEventListener('click', () => { $('query-input').value = button.dataset.prompt; selectedScenario = button.dataset.scenario || null; selectedScenarioPrompt = button.dataset.prompt; document.querySelectorAll('[data-prompt]').forEach(item => item.classList.toggle('selected', item === button)); $('query-input').focus(); }));
-  $('token-open').addEventListener('click', () => { $('token-input').value = token(); tokenDialog.showModal(); });
-  $('save-token').addEventListener('click', event => { event.preventDefault(); const value = $('token-input').value.trim(); if (!value) { toast('Paste a bearer token to connect.'); return; } sessionStorage.setItem(tokenKey, value); tokenDialog.close(); refreshDashboard(); toast('Token set for this browser tab.'); });
+  $('login-open').addEventListener('click', () => loginDialog.showModal());
+  $('close-login').addEventListener('click', () => loginDialog.close());
+  $('cancel-login').addEventListener('click', () => loginDialog.close());
+  $('login-form').addEventListener('submit', signIn);
+  $('logout-button').addEventListener('click', signOut);
+  $('save-token').addEventListener('click', () => { const value = $('token-input').value.trim(); if (!value) { toast('Paste a bearer token to connect.'); return; } sessionStorage.setItem(tokenKey, value); loginDialog.close(); refreshDashboard(); toast('Token set for this browser tab.'); });
   $('refresh-button').addEventListener('click', async () => { await health(); await refreshDashboard(); });
   $('refresh-history').addEventListener('click', refreshDashboard);
   health(); refreshDashboard(); demoConfigurationReady = demoConfiguration();

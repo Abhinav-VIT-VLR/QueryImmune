@@ -46,7 +46,7 @@ function response(status, body, contentType = 'application/json; charset=utf-8')
   };
 }
 
-function setup(nlResponse, dashboardResponse = response(200, { history: [], workload: [], behavior_profile: null }), demoEnabled = false) {
+function setup(nlResponse, dashboardResponse = response(200, { history: [], workload: [], behavior_profile: null }), demoEnabled = false, loginResponse = response(200, { access_token: 'issued-token', token_type: 'bearer', expires_in: 900 })) {
   const elements = new Map();
   const get = id => {
     if (!elements.has(id)) {
@@ -68,6 +68,8 @@ function setup(nlResponse, dashboardResponse = response(200, { history: [], work
       if (nextResponse instanceof Error) throw nextResponse;
       return nextResponse;
     }
+    if (path === '/api/v1/auth/login') return loginResponse;
+    if (path === '/api/v1/auth/me') return response(200, { subject: 'demo:dr-ada', display_name: 'Dr Ada Example', roles: ['doctor'] });
     if (path === '/health/ready') return response(200, { status: 'ok' });
     if (path === '/api/v1/demo/config') return response(200, { enabled: demoEnabled });
     if (path === '/api/v1/dashboard') return dashboardResponse;
@@ -93,14 +95,14 @@ function setup(nlResponse, dashboardResponse = response(200, { history: [], work
   const sandbox = {
     document,
     fetch,
-    sessionStorage: { getItem: key => session.get(key) || '', setItem: (key, value) => session.set(key, value) },
+    sessionStorage: { getItem: key => session.get(key) || '', setItem: (key, value) => session.set(key, value), removeItem: key => session.delete(key) },
     clearTimeout,
     setTimeout: () => 1,
     console: { warn: (...args) => warnings.push(args) },
   };
   vm.runInNewContext(source, sandbox, { filename: 'app.js' });
   get('query-input').value = 'Show a test query';
-  return { elements, get, calls, requests, warnings, promptButtons };
+  return { elements, get, calls, requests, warnings, promptButtons, session };
 }
 
 const decision = (name, extra = {}) => ({
@@ -259,6 +261,40 @@ test('401 shows an authentication error', async () => {
   const env = await submit(response(401, { detail: 'Invalid token' }));
   assert.equal(env.get('toast').textContent, 'Invalid token');
   assert.equal(env.get('decision-section').hidden, true);
+});
+
+test('login stores the issued token and displays the database identity and roles', async () => {
+  const env = setup(response(200, decision('allow')));
+  env.get('login-username').value = 'professor-demo';
+  env.get('login-password').value = 'correct password';
+  await env.get('login-form').handlers.submit({ preventDefault() {} });
+  const request = env.requests.find(item => item.path === '/api/v1/auth/login');
+  assert.deepEqual(JSON.parse(request.options.body), { username: 'professor-demo', password: 'correct password' });
+  assert.equal(request.options.headers.Authorization, undefined);
+  assert.equal(env.session.get('queryimmune_api_token'), 'issued-token');
+  assert.equal(env.get('current-user-name').textContent, 'Dr Ada Example');
+  assert.equal(env.get('identity-status').textContent, 'doctor');
+  assert.equal(env.get('logout-button').hidden, false);
+});
+
+test('invalid login displays the server rejection and does not store a token', async () => {
+  const env = setup(response(200, decision('allow')), undefined, false, response(401, { detail: 'Invalid username or password' }));
+  env.session.delete('queryimmune_api_token');
+  env.get('login-username').value = 'professor-demo';
+  env.get('login-password').value = 'wrong password';
+  await env.get('login-form').handlers.submit({ preventDefault() {} });
+  assert.equal(env.get('login-error').textContent, 'Invalid username or password');
+  assert.equal(env.session.has('queryimmune_api_token'), false);
+});
+
+test('logout removes the tab token and clears authenticated dashboard data', async () => {
+  const env = setup(response(200, decision('allow')));
+  await env.get('logout-button').handlers.click();
+  assert.equal(env.session.has('queryimmune_api_token'), false);
+  assert.equal(env.get('current-user-name').textContent, 'Signed out');
+  assert.equal(env.get('identity-status').textContent, 'Sign in to continue');
+  assert.equal(env.get('logout-button').hidden, true);
+  assert.equal(env.get('current-user-name').textContent, 'Signed out');
 });
 
 test('403 without a structured decision is treated as authorization failure', async () => {
