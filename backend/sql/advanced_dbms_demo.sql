@@ -86,34 +86,79 @@ SELECT set_config('queryimmune.actor_id', '10000000-0000-4000-8000-000000000008'
 SELECT set_config('queryimmune.request_id', gen_random_uuid()::text, true);
 
 INSERT INTO healthcare.appointments(
-    id, patient_id, doctor_id, scheduled_at, status, reason_category
+    patient_id, doctor_id, scheduled_at, status, reason_category
 ) VALUES (
-    '90000000-0000-4000-8000-000000000001',
     '30000000-0000-4000-8000-000000000001',
     '20000000-0000-4000-8000-000000000001',
     now() + interval '45 days',
     'scheduled',
     'DBMS demonstration'
+)
+RETURNING id AS demo_appointment_id \gset
+\echo 'Created appointment:' :demo_appointment_id
+
+SAVEPOINT before_invalid_reference;
+-- Intentionally violates patient_id FK. psql reports the error and leaves the
+-- transaction failed until the savepoint rollback below.
+INSERT INTO healthcare.appointments(
+    patient_id, doctor_id, scheduled_at, status, reason_category
+) VALUES (
+    'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    '20000000-0000-4000-8000-000000000001',
+    now() + interval '46 days',
+    'scheduled',
+    'invalid FK demonstration'
 );
+ROLLBACK TO SAVEPOINT before_invalid_reference;
 
-SAVEPOINT appointment_status_demo;
+SAVEPOINT before_direct_update;
+UPDATE healthcare.appointments
+SET status = 'cancelled', updated_at = now()
+WHERE id = :'demo_appointment_id'::uuid
+RETURNING id, status;
+ROLLBACK TO SAVEPOINT before_direct_update;
 
--- Exercise the validated, audited UPDATE and then restore the inserted row's
--- original status to demonstrate savepoint recovery.
+SAVEPOINT before_invalid_status;
+-- The function raises SQLSTATE 22023 for this unsupported value.
 SELECT security.admin_update_appointment_status(
-    '90000000-0000-4000-8000-000000000001',
-    'completed'
+    :'demo_appointment_id'::uuid, 'pending'
 );
-ROLLBACK TO SAVEPOINT appointment_status_demo;
+ROLLBACK TO SAVEPOINT before_invalid_status;
 
--- Exercise a second validated UPDATE, then delete only the synthetic row this
--- transaction inserted. The final ROLLBACK leaves no demo data persisted.
-SELECT security.admin_update_appointment_status(
-    '90000000-0000-4000-8000-000000000001',
-    'cancelled'
-);
+SAVEPOINT before_status_change;
+SELECT (security.admin_update_appointment_status(
+    :'demo_appointment_id'::uuid, 'completed'
+)).status AS status_inside_savepoint;
+ROLLBACK TO SAVEPOINT before_status_change;
+
+SELECT (security.admin_update_appointment_status(
+    :'demo_appointment_id'::uuid, 'completed'
+)).status AS committed_status;
 
 DELETE FROM healthcare.appointments
-WHERE id = '90000000-0000-4000-8000-000000000001';
+WHERE id = :'demo_appointment_id'::uuid
+RETURNING id AS deleted_appointment_id;
 
+-- The audit trigger runs in this same transaction. Inspect the synthetic audit
+-- rows before rolling back so neither the appointment nor its audit events persist.
+SELECT action, count(*) AS event_count
+FROM security.admin_audit_events
+WHERE appointment_id = :'demo_appointment_id'::uuid
+GROUP BY action
+ORDER BY action;
 ROLLBACK;
+
+\echo 'Full transaction rollback: the status and trigger audit event both revert'
+BEGIN;
+SELECT set_config('queryimmune.actor_id', '10000000-0000-4000-8000-000000000008', true);
+SELECT set_config('queryimmune.request_id', gen_random_uuid()::text, true);
+SELECT (security.admin_update_appointment_status(
+    '40000000-0000-4000-8000-000000000002', 'cancelled'
+)).status AS temporary_status;
+ROLLBACK;
+
+SELECT id, status
+FROM healthcare.appointments
+WHERE id = '40000000-0000-4000-8000-000000000002';
+
+\echo 'Successful completion. Inspect EXPLAIN plans for the date-filtered reports if desired.'

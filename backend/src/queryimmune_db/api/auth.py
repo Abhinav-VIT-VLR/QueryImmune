@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
 import math
+import re
 import time
 from typing import Protocol
 
@@ -24,7 +26,37 @@ class TokenAuthenticator(Protocol):
 
 
 def _decode_segment(segment: str) -> bytes:
-    return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+    if not segment or re.fullmatch(r"[A-Za-z0-9_-]+", segment) is None:
+        raise ValueError("invalid token encoding")
+    padded = segment + "=" * (-len(segment) % 4)
+    try:
+        return base64.b64decode(padded, altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("invalid token encoding") from exc
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON claim")
+        result[key] = value
+    return result
+
+
+def _numeric_date(claims: dict[str, object], key: str, *, required: bool = False) -> float | None:
+    value = claims.get(key)
+    if value is None and not required:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"invalid {key} claim")
+    try:
+        numeric_value = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"invalid {key} claim") from exc
+    if not math.isfinite(numeric_value):
+        raise ValueError(f"invalid {key} claim")
+    return numeric_value
 
 
 class Hs256Authenticator:
@@ -41,8 +73,8 @@ class Hs256Authenticator:
             raise ValueError("invalid token")
         try:
             header_part, claims_part, signature_part = token.split(".")
-            header = json.loads(_decode_segment(header_part))
-            claims = json.loads(_decode_segment(claims_part))
+            header = json.loads(_decode_segment(header_part), object_pairs_hook=_unique_object)
+            claims = json.loads(_decode_segment(claims_part), object_pairs_hook=_unique_object)
             if not isinstance(header, dict) or not isinstance(claims, dict):
                 raise ValueError("invalid token structure")
             if header.get("alg") != "HS256" or header.get("typ", "JWT") != "JWT":
@@ -52,18 +84,29 @@ class Hs256Authenticator:
             if not hmac.compare_digest(expected, _decode_segment(signature_part)):
                 raise ValueError("invalid signature")
             now = int(time.time())
-            if not isinstance(claims.get("exp"), (int, float)) or not math.isfinite(claims["exp"]) or claims["exp"] <= now:
+            expiration = _numeric_date(claims, "exp", required=True)
+            if expiration is None or expiration <= now:
                 raise ValueError("expired token")
             if claims.get("iss") != self.settings.auth_issuer:
                 raise ValueError("invalid issuer")
             audience = claims.get("aud")
-            if self.settings.auth_audience not in (audience if isinstance(audience, list) else [audience]):
+            if isinstance(audience, str):
+                audiences = [audience]
+            elif isinstance(audience, list) and audience and all(isinstance(item, str) and item for item in audience):
+                audiences = audience
+            else:
+                raise ValueError("invalid audience")
+            if self.settings.auth_audience not in audiences:
                 raise ValueError("invalid audience")
             subject = claims.get("sub")
             if not isinstance(subject, str) or not subject or len(subject) > 255:
                 raise ValueError("invalid subject")
-            if "nbf" in claims and (not isinstance(claims["nbf"], (int, float)) or not math.isfinite(claims["nbf"]) or claims["nbf"] > now):
+            not_before = _numeric_date(claims, "nbf")
+            if not_before is not None and not_before > now:
                 raise ValueError("token not yet valid")
+            issued_at = _numeric_date(claims, "iat")
+            if issued_at is not None and issued_at > now:
+                raise ValueError("token issued in the future")
             return subject
         except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ValueError("invalid bearer token") from exc

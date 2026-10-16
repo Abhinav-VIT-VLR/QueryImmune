@@ -265,6 +265,7 @@ def test_advanced_reporting_migration_adds_curated_views_function_and_indexes():
     assert "using errcode = 'p0002'" in migration
     compact = "".join(migration.split())
     assert "grantexecuteonfunctionsecurity.admin_update_appointment_status(uuid,text)toqi_orm_admin" in compact
+    assert "grant execute on function security.admin_update_appointment_status(uuid, text) to qi_orm_admin" in migration
     assert "create index query_logs_created_at_idx" in migration
     assert "create index risk_events_created_at_idx" in migration
     assert "create index appointments_scheduled_at_idx" in migration
@@ -272,7 +273,7 @@ def test_advanced_reporting_migration_adds_curated_views_function_and_indexes():
     for keyword in ("begin;", "commit;", "rollback;", "savepoint", "rollback to savepoint",
                     "inner join", "left join", "right join", "having", "count(", "sum(",
                     "avg(", "min(", "max(", "exists (", "insert into",
-                    "security.admin_update_appointment_status", "delete from"):
+                    "security.admin_update_appointment_status", "update healthcare.appointments", "delete from"):
         assert keyword in demo
 
 

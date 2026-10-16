@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 import psycopg
 
 from queryimmune_db.api.auth import get_current_actor
+from queryimmune_db.api.admin_appointments import router as admin_appointments_router
 from queryimmune_db.api.config import Settings
 from queryimmune_db.api.logging import configure_logging
 from queryimmune_db.api.models import (
@@ -34,6 +35,7 @@ from queryimmune_db.application.nl2sql import (
 from queryimmune_db.connection import database_health
 from queryimmune_db.behavior import BehaviorAwarePipeline, ControlledProfileUpdater
 from queryimmune_db.domain.identity import Actor
+from queryimmune_db.orm.session import orm_database_available
 from queryimmune_db.repositories.healthcare import HealthcareRepository
 from queryimmune_db.services.execution import ExecutionService
 from queryimmune_db.services.policy import Decision, DeterministicPolicyPipeline
@@ -49,6 +51,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+app.include_router(admin_appointments_router)
 
 
 @app.middleware("http")
@@ -109,8 +112,13 @@ def liveness() -> HealthResponse:
 
 
 @app.get("/health/ready", response_model=HealthResponse, tags=["health"])
-def readiness() -> HealthResponse:
-    return HealthResponse(status=database_health()["status"])
+def readiness(response: Response) -> HealthResponse:
+    runtime_available = database_health()["status"] == "ok"
+    orm_available = orm_database_available()
+    if not runtime_available or not orm_available:
+        response.status_code = 503
+        return HealthResponse(status="unavailable")
+    return HealthResponse(status="ok")
 
 
 @app.post("/api/v1/requests", response_model=DecisionResponse, tags=["execution"])
@@ -296,4 +304,3 @@ app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
 @app.get("/", include_in_schema=False)
 def demo_ui() -> FileResponse:
     return FileResponse(WEB_ROOT / "index.html")
-

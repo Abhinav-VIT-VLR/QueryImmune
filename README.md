@@ -29,6 +29,7 @@ This local-only token command is enabled only by the Compose demo configuration.
 - [PostgreSQL schema and operations](DATABASE.md)
 - [Evaluation method and generated results](EVALUATION.md)
 - [Demo walkthrough](DEMO.md)
+- [DBMS assessment and faculty demonstration guide](ASSESSMENT.md)
 - [Engineering blueprint](docs/engineering-blueprint.md)
 
 The current evaluation is a small development shadow corpus. It does not contact a model or database and is not a held-out accuracy study. Full-stack latency and live executor instrumentation remain unmeasured.
