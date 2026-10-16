@@ -16,7 +16,7 @@
     <a class="nav-item" href="#audit"><span>◎</span> Risk &amp; audit</a>
     <div class="side-bottom">
       <div class="security-card"><div class="tiny-icon">✳</div><b>Protected by policy</b><p>Every request is checked before it reaches PostgreSQL.</p><span class="live"><i></i> ENFORCEMENT ACTIVE</span></div>
-      <div class="user-box"><div class="avatar">QI</div><div class="user-meta"><b>Authenticated session</b><span id="identity-status">Token required</span></div><button id="token-open" class="icon-button" title="Set API token">⚙</button></div>
+      <div class="user-box"><div class="avatar">QI</div><div class="user-meta"><b id="current-user-name">Signed out</b><span id="identity-status">Sign in to continue</span></div><button id="login-open" class="icon-button" title="Sign in">Sign in</button><button id="logout-button" class="icon-button" title="Sign out" hidden>Log out</button></div>
     </div>
   </aside>
 
@@ -52,7 +52,7 @@
     <footer><span>QueryImmune</span><span>Healthcare security prototype · synthetic data only</span><span>Risk decisions are policy outputs, not clinical advice.</span></footer>
   </main>
 
-  <dialog id="token-dialog"><form method="dialog" class="token-form"><div class="panel-heading"><b>Connect to QueryImmune API</b><button class="icon-button" value="cancel" aria-label="Close">×</button></div><p>Paste a valid bearer token from your configured identity provider. The token stays in this browser tab and is sent only to this API.</p><label for="token-input">API BEARER TOKEN</label><textarea id="token-input" rows="4" placeholder="eyJ…"></textarea><div class="dialog-actions"><button class="quiet-button" value="cancel">Cancel</button><button id="save-token" class="primary-button" value="default">Connect <b>→</b></button></div></form></dialog>
+  <dialog id="login-dialog"><form id="login-form" class="token-form"><div class="panel-heading"><b>Sign in to QueryImmune</b><button id="close-login" class="icon-button" type="button" aria-label="Close">Close</button></div><p>Use the login configured for this QueryImmune demonstration.</p><label for="login-username">USERNAME</label><input id="login-username" name="username" autocomplete="username" required maxlength="128"><label for="login-password">PASSWORD</label><input id="login-password" name="password" type="password" autocomplete="current-password" required maxlength="1024"><div class="dialog-actions"><button class="quiet-button" type="button" id="cancel-login">Cancel</button><button id="submit-login" class="primary-button" type="submit">Sign in</button></div><p id="login-error" role="status" aria-live="polite"></p><details><summary>Use an existing bearer token</summary><label for="token-input">API BEARER TOKEN</label><textarea id="token-input" rows="4" placeholder="Paste token"></textarea><div class="dialog-actions"><button id="save-token" class="primary-button" type="button">Connect token</button></div></details></form></dialog>
   <div id="toast" class="toast" role="status"></div>
   <script src="/static/app.js" defer></script>
 </body>

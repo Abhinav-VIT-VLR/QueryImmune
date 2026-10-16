@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import psycopg
 
-from queryimmune_db.api.auth import get_current_actor
+from queryimmune_db.api.auth import get_current_actor, router as auth_router
 from queryimmune_db.api.admin_appointments import router as admin_appointments_router
 from queryimmune_db.api.config import Settings
 from queryimmune_db.api.logging import configure_logging
@@ -52,6 +52,7 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 app.include_router(admin_appointments_router)
+app.include_router(auth_router)
 
 
 @app.middleware("http")
