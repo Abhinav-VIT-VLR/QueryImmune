@@ -48,7 +48,21 @@ def provision_database_roles() -> None:
                         sql.Identifier(role_name)
                     )
                 )
-    print("provisioned database privilege roles")
+        # Verify the roles exist before any SQL migration can GRANT to them.
+        existing_roles = {
+            row[0]
+            for row in conn.execute(
+                "SELECT rolname FROM pg_roles WHERE rolname = ANY(%s)",
+                (list(DATABASE_ROLES),),
+            ).fetchall()
+        }
+        missing_roles = sorted(set(DATABASE_ROLES) - existing_roles)
+        if missing_roles:
+            raise RuntimeError(
+                "Failed to provision required PostgreSQL privilege roles: "
+                + ", ".join(missing_roles)
+            )
+    print("provisioned database privilege roles: " + ", ".join(DATABASE_ROLES))
 
 
 def apply_migrations() -> None:

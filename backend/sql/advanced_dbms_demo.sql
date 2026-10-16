@@ -139,14 +139,14 @@ DELETE FROM healthcare.appointments
 WHERE id = :'demo_appointment_id'::uuid
 RETURNING id AS deleted_appointment_id;
 
--- The audit trigger runs in this same transaction. The committed rows will
--- include create, completed status update, and delete, but not rolled-back work.
+-- The audit trigger runs in this same transaction. Inspect the synthetic audit
+-- rows before rolling back so neither the appointment nor its audit events persist.
 SELECT action, count(*) AS event_count
 FROM security.admin_audit_events
 WHERE appointment_id = :'demo_appointment_id'::uuid
 GROUP BY action
 ORDER BY action;
-COMMIT;
+ROLLBACK;
 
 \echo 'Full transaction rollback: the status and trigger audit event both revert'
 BEGIN;
