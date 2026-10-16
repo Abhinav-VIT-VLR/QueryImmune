@@ -17,6 +17,9 @@ ROOT = project_root()
 MIGRATIONS = ROOT / "migrations"
 DATABASE_ROLES = ("qi_owner", "qi_runtime", "qi_orm_admin")
 SEED_ACTOR_ID = "10000000-0000-4000-8000-000000000008"
+ROLE_ATTRIBUTES_QUERY = """SELECT rolcanlogin, rolinherit, rolsuper, rolcreatedb,
+                                  rolcreaterole, rolreplication
+                           FROM pg_roles WHERE rolname = %s"""
 
 
 def admin_url() -> str:
@@ -24,6 +27,41 @@ def admin_url() -> str:
     if not value:
         raise RuntimeError("DATABASE_ADMIN_URL is required for migrations")
     return value
+
+
+def _verify_restricted_role(
+    conn: psycopg.Connection,
+    role_name: str,
+    *,
+    attributes: tuple[bool, ...] | None = None,
+    login: bool | None = None,
+    inherit: bool | None = None,
+) -> None:
+    if attributes is None:
+        attributes = conn.execute(ROLE_ATTRIBUTES_QUERY, (role_name,)).fetchone()
+    if attributes is None:
+        raise RuntimeError(f"Required PostgreSQL role {role_name!r} does not exist")
+
+    actual = dict(zip(
+        ("LOGIN", "INHERIT", "SUPERUSER", "CREATEDB", "CREATEROLE", "REPLICATION"),
+        attributes,
+        strict=True,
+    ))
+    expected = {"SUPERUSER": False, "CREATEDB": False, "CREATEROLE": False, "REPLICATION": False}
+    if login is not None:
+        expected["LOGIN"] = login
+    if inherit is not None:
+        expected["INHERIT"] = inherit
+    mismatches = [
+        f"{name}={actual[name]} (expected {value})"
+        for name, value in expected.items()
+        if actual[name] is not value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            f"PostgreSQL role {role_name!r} has unsafe or incorrect attributes: "
+            + ", ".join(mismatches)
+        )
 
 
 def provision_database_roles() -> None:
@@ -35,33 +73,14 @@ def provision_database_roles() -> None:
     """
     with psycopg.connect(admin_url(), autocommit=True, connect_timeout=5) as conn:
         for role_name in DATABASE_ROLES:
-            exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role_name,)).fetchone()
-            if not exists:
+            attributes = conn.execute(ROLE_ATTRIBUTES_QUERY, (role_name,)).fetchone()
+            if attributes is None:
                 conn.execute(
                     sql.SQL("CREATE ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION").format(
                         sql.Identifier(role_name)
                     )
                 )
-            else:
-                conn.execute(
-                    sql.SQL("ALTER ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION").format(
-                        sql.Identifier(role_name)
-                    )
-                )
-        # Verify the roles exist before any SQL migration can GRANT to them.
-        existing_roles = {
-            row[0]
-            for row in conn.execute(
-                "SELECT rolname FROM pg_roles WHERE rolname = ANY(%s)",
-                (list(DATABASE_ROLES),),
-            ).fetchall()
-        }
-        missing_roles = sorted(set(DATABASE_ROLES) - existing_roles)
-        if missing_roles:
-            raise RuntimeError(
-                "Failed to provision required PostgreSQL privilege roles: "
-                + ", ".join(missing_roles)
-            )
+            _verify_restricted_role(conn, role_name, attributes=attributes, login=False)
     print("provisioned database privilege roles: " + ", ".join(DATABASE_ROLES))
 
 
@@ -91,10 +110,17 @@ def provision_runtime_role() -> None:
     if role_name == "qi_runtime":
         raise RuntimeError("DATABASE_RUNTIME_ROLE must be a login distinct from the qi_runtime privilege role")
     with psycopg.connect(admin_url(), autocommit=True, connect_timeout=5) as conn:
-        exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role_name,)).fetchone()
-        if not exists:
+        attributes = conn.execute(ROLE_ATTRIBUTES_QUERY, (role_name,)).fetchone()
+        if attributes is None:
             conn.execute(sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION").format(sql.Identifier(role_name)))
-        conn.execute(sql.SQL("ALTER ROLE {} LOGIN PASSWORD {}").format(sql.Identifier(role_name), sql.Literal(password)))
+        else:
+            _verify_restricted_role(conn, role_name, attributes=attributes)
+        conn.execute(
+            sql.SQL("ALTER ROLE {} LOGIN INHERIT PASSWORD {}").format(
+                sql.Identifier(role_name), sql.Literal(password)
+            )
+        )
+        _verify_restricted_role(conn, role_name, login=True, inherit=True)
         conn.execute(sql.SQL("GRANT qi_runtime TO {}").format(sql.Identifier(role_name)))
     print(f"provisioned runtime role {role_name}")
 
@@ -106,18 +132,21 @@ def provision_orm_admin_role() -> None:
         raise RuntimeError("DATABASE_ORM_ADMIN_PASSWORD is required to provision the ORM admin login")
     role_name = "queryimmune_orm_admin"
     with psycopg.connect(admin_url(), autocommit=True, connect_timeout=5) as conn:
-        exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role_name,)).fetchone()
-        if not exists:
+        attributes = conn.execute(ROLE_ATTRIBUTES_QUERY, (role_name,)).fetchone()
+        if attributes is None:
             conn.execute(
                 sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION").format(
                     sql.Identifier(role_name)
                 )
             )
+        else:
+            _verify_restricted_role(conn, role_name, attributes=attributes)
         conn.execute(
-            sql.SQL("ALTER ROLE {} WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD {}").format(
+            sql.SQL("ALTER ROLE {} WITH LOGIN INHERIT PASSWORD {}").format(
                 sql.Identifier(role_name), sql.Literal(password)
             )
         )
+        _verify_restricted_role(conn, role_name, login=True, inherit=True)
         memberships = conn.execute(
             """SELECT granted.rolname
                FROM pg_auth_members membership

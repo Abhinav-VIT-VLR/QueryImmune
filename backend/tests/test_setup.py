@@ -72,3 +72,117 @@ def test_runtime_login_inherits_the_canonical_privilege_role():
     assert migrate.ROOT == REPOSITORY_ROOT / "backend"
     assert migrate.MIGRATIONS.is_dir()
     assert (migrate.ROOT / "seed").is_dir()
+
+
+class _FakeQueryResult:
+    def __init__(self, row=None, rows=()):
+        self.row = row
+        self.rows = list(rows)
+
+    def fetchone(self):
+        return self.row
+
+    def fetchall(self):
+        return self.rows
+
+
+class _FakeRoleConnection:
+    def __init__(self, roles):
+        self.roles = roles
+        self.statements = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def execute(self, query, params=None):
+        statement = query if isinstance(query, str) else query.as_string()
+        self.statements.append(statement)
+        if statement.lstrip().lower().startswith("select rolcanlogin"):
+            return _FakeQueryResult(row=self.roles.get(params[0]))
+        if statement.lstrip().startswith("SELECT granted.rolname"):
+            return _FakeQueryResult(rows=())
+        return _FakeQueryResult()
+
+
+def _safe_role_attributes(*, login=False, inherit=True, superuser=False):
+    return (login, inherit, superuser, False, False, False)
+
+
+def _assert_alter_role_has_no_privileged_attributes(connection):
+    import re
+
+    forbidden = re.compile(r"\b(?:NO)?(?:SUPERUSER|CREATEDB|CREATEROLE|REPLICATION)\b", re.I)
+    alterations = [
+        statement for statement in connection.statements
+        if statement.lstrip().upper().startswith("ALTER ROLE")
+    ]
+    assert all(forbidden.search(statement) is None for statement in alterations)
+
+
+def test_existing_privilege_roles_are_verified_without_alter_role(monkeypatch):
+    from queryimmune_db import migrate
+
+    connection = _FakeRoleConnection({
+        name: _safe_role_attributes() for name in migrate.DATABASE_ROLES
+    })
+    monkeypatch.setattr(migrate, "admin_url", lambda: "postgresql://unused")
+    monkeypatch.setattr(migrate.psycopg, "connect", lambda *args, **kwargs: connection)
+
+    migrate.provision_database_roles()
+
+    assert not any(
+        statement.lstrip().upper().startswith("ALTER ROLE")
+        for statement in connection.statements
+    )
+    assert sum(statement == migrate.ROLE_ATTRIBUTES_QUERY for statement in connection.statements) == len(migrate.DATABASE_ROLES)
+
+
+def test_existing_unsafe_privilege_role_fails_with_diagnostic(monkeypatch):
+    from queryimmune_db import migrate
+
+    roles = {name: _safe_role_attributes() for name in migrate.DATABASE_ROLES}
+    roles["qi_runtime"] = _safe_role_attributes(superuser=True)
+    connection = _FakeRoleConnection(roles)
+    monkeypatch.setattr(migrate, "admin_url", lambda: "postgresql://unused")
+    monkeypatch.setattr(migrate.psycopg, "connect", lambda *args, **kwargs: connection)
+
+    with pytest.raises(RuntimeError, match="qi_runtime.*SUPERUSER=True"):
+        migrate.provision_database_roles()
+
+    assert not any(
+        statement.lstrip().upper().startswith("ALTER ROLE")
+        for statement in connection.statements
+    )
+
+
+@pytest.mark.parametrize(
+    ("provision", "role_name", "password_env"),
+    [
+        ("provision_runtime_role", "queryimmune_runtime", "DATABASE_RUNTIME_PASSWORD"),
+        ("provision_orm_admin_role", "queryimmune_orm_admin", "DATABASE_ORM_ADMIN_PASSWORD"),
+    ],
+)
+def test_existing_login_roles_use_only_login_inherit_and_password_alterations(
+    monkeypatch, provision, role_name, password_env
+):
+    from queryimmune_db import migrate
+
+    connection = _FakeRoleConnection({role_name: _safe_role_attributes(login=True)})
+    monkeypatch.setattr(migrate, "admin_url", lambda: "postgresql://unused")
+    monkeypatch.setattr(migrate.psycopg, "connect", lambda *args, **kwargs: connection)
+    monkeypatch.setenv(password_env, "test-only-role-password")
+
+    getattr(migrate, provision)()
+
+    alterations = [
+        statement for statement in connection.statements
+        if statement.lstrip().upper().startswith("ALTER ROLE")
+    ]
+    assert len(alterations) == 1
+    assert "LOGIN" in alterations[0].upper()
+    assert "INHERIT" in alterations[0].upper()
+    assert "PASSWORD 'test-only-role-password'" in alterations[0]
+    _assert_alter_role_has_no_privileged_attributes(connection)
