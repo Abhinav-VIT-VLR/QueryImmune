@@ -76,7 +76,7 @@ def provision_database_roles() -> None:
             attributes = conn.execute(ROLE_ATTRIBUTES_QUERY, (role_name,)).fetchone()
             if attributes is None:
                 conn.execute(
-                    sql.SQL("CREATE ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION").format(
+                    sql.SQL("CREATE ROLE {} NOLOGIN NOCREATEDB NOCREATEROLE NOREPLICATION").format(
                         sql.Identifier(role_name)
                     )
                 )
@@ -112,7 +112,7 @@ def provision_runtime_role() -> None:
     with psycopg.connect(admin_url(), autocommit=True, connect_timeout=5) as conn:
         attributes = conn.execute(ROLE_ATTRIBUTES_QUERY, (role_name,)).fetchone()
         if attributes is None:
-            conn.execute(sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION").format(sql.Identifier(role_name)))
+            conn.execute(sql.SQL("CREATE ROLE {} LOGIN NOCREATEDB NOCREATEROLE NOREPLICATION").format(sql.Identifier(role_name)))
         else:
             _verify_restricted_role(conn, role_name, attributes=attributes)
         conn.execute(
@@ -135,7 +135,7 @@ def provision_orm_admin_role() -> None:
         attributes = conn.execute(ROLE_ATTRIBUTES_QUERY, (role_name,)).fetchone()
         if attributes is None:
             conn.execute(
-                sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION").format(
+                sql.SQL("CREATE ROLE {} LOGIN NOCREATEDB NOCREATEROLE NOREPLICATION").format(
                     sql.Identifier(role_name)
                 )
             )
